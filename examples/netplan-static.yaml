@@ -1,0 +1,43 @@
+# Static IPv4 network example for a server install.
+#
+# Point NETPLAN_FILE at this file in your host config to install it verbatim as
+# /etc/netplan/01-netplan.yaml. Leave NETPLAN_FILE unset for DHCP (the default).
+#
+#   NETPLAN_FILE="examples/netplan-static.yaml"   # relative paths resolve against the script dir
+#
+# Addresses below use the RFC 5737 documentation range (192.0.2.0/24) - replace
+# them with your real values. Find the interface name in the live environment
+# with `ip -br link` (e.g. enp1s0, eno1, ens3); it must match the key below.
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp1s0:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - 192.0.2.10/24
+      routes:
+        - to: default
+          via: 192.0.2.1
+      nameservers:
+        addresses:
+          - 1.1.1.1
+          - 9.9.9.9
+
+# --- Tip: stable interface naming -------------------------------------------
+# Predictable names (enp1s0, ...) can still differ between the live environment
+# and the installed system. To pin a name to a NIC by its MAC address, match on
+# it and rename - then use that name as the ethernets key above:
+#
+#   ethernets:
+#     lan0:
+#       match:
+#         macaddress: "aa:bb:cc:dd:ee:ff"
+#       set-name: lan0
+#       addresses: [192.0.2.10/24]
+#       routes:
+#         - to: default
+#           via: 192.0.2.1
+#       nameservers:
+#         addresses: [1.1.1.1, 9.9.9.9]

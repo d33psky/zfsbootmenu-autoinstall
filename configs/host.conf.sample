@@ -1,0 +1,41 @@
+## host.conf.sample - annotated template for zfs-install.sh / zfs-mirror.sh
+## Copy this to a file of your own (e.g. myhost.conf), edit the values, and pass
+## its path as the first argument:
+##
+##   sudo ./zfs-install.sh /path/to/myhost.conf initial
+##
+## Keep real host configs OUT of this public repo - maintain them in your own
+## private repo/directory and reference them by path.
+## ============================================================================
+
+## --- Required ----------------------------------------------------------------
+DISKID="nvme-Samsung_SSD_980_PRO_1TB_S5XXXX" # primary disk's /dev/disk/by-id/ name (NO path prefix)
+HOSTNAME="myhost"                            # system hostname
+USERNAME="admin"                             # primary (sudo) user account
+USERPASS="changeme"                          # password for the user and root; set securely, never commit a real one
+TIMEZONE="UTC"                               # e.g. UTC, Europe/Amsterdam, America/New_York
+
+## --- OS ----------------------------------------------------------------------
+POOL_NAME="zroot"      # ZFS root pool name (default: zroot)
+COMPRESSION="lz4"      # ZFS compression (default: lz4)
+UBUNTU_VER="noble"     # Ubuntu release codename (default: noble = 24.04)
+DISTRO="server"        # "server" or "kubuntu" (default: server)
+
+## --- Boot / partitioning -----------------------------------------------------
+BOOT_MODE="uefi"       # "uefi" (rEFInd) or "bios" (syslinux). Default: uefi
+SWAP_SIZE="0"          # swap partition size in MB; 0 = no swap (default: 0)
+ASHIFT="12"            # ZFS pool ashift; 12 = 4K sectors (default: 12)
+BOOT_SIZE="512M"       # ESP/boot partition size (sgdisk syntax). 1G gives ZBM image headroom on headless boxes
+ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root is bounded and the disk
+                       # REMAINDER becomes a reserved BF00 partition (part3) for a later vdev (e.g. a ZFS
+                       # special vdev). zfs-mirror.sh replicates this layout (incl. part3) to the mirror disk.
+
+## --- Optional: static network ------------------------------------------------
+## If set, this netplan YAML is installed verbatim as /etc/netplan/01-netplan.yaml.
+## A relative path is resolved against the script directory. Unset = DHCP autoconfig.
+## See examples/netplan-static.yaml for an annotated static-IP template to copy.
+#NETPLAN_FILE="examples/netplan-static.yaml"
+
+## --- Optional: root mirror (for zfs-mirror.sh) -------------------------------
+## The /dev/disk/by-id/ name of the second disk to attach as a root mirror.
+#MIRRORDISKID="nvme-Samsung_SSD_980_PRO_1TB_S5YYYY"

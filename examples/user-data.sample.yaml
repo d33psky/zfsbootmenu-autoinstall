@@ -1,0 +1,27 @@
+#cloud-config
+## Sample cloud-init user-data for the headless UEFI test harness.
+## Copy this to test/user-data and replace the SSH key with your own public key:
+##   cp examples/user-data.sample.yaml test/user-data
+##   ${EDITOR} test/user-data   # paste your ~/.ssh/ public key
+## The username here must match SSH_USER in test-uefi-headless.sh (default: ubuntu).
+hostname: zbm-live
+ssh_pwauth: false
+users:
+  - name: ubuntu
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAA...REPLACE_WITH_YOUR_PUBLIC_KEY... you@example
+package_update: true
+packages:
+  - debootstrap
+  - gdisk
+  - dosfstools
+  - zfsutils-linux
+  - zfs-initramfs
+  - efibootmgr
+  - rsync
+  - mbuffer
+  - netcat-openbsd
+runcmd:
+  - [ touch, /run/cloud-init-finished ]
