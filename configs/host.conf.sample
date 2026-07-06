@@ -36,6 +36,22 @@ ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root
 ## See examples/netplan-static.yaml for an annotated static-IP template to copy.
 #NETPLAN_FILE="examples/netplan-static.yaml"
 
+## --- Optional: SSH authorized_keys -------------------------------------------
+## If set, this file of SSH public keys is copied verbatim into ~USERNAME/.ssh/
+## authorized_keys at install (700 on .ssh, 600 on authorized_keys). Lets CI /
+## config-management + operators reach the box before any password login. A
+## relative path is resolved against the script directory. Unset = password-only.
+#AUTHORIZED_KEYS="myhost.authorized_keys"
+
+## --- Optional: pool feature compatibility ------------------------------------
+## zpool 'compatibility' profile capping the root pool's enabled features. Set this
+## when the environment you RUN the installer in has a NEWER ZFS than the installed
+## distro will (otherwise the target can't import the pool at boot). The Hetzner
+## rescue builds the LATEST OpenZFS while Ubuntu noble ships 2.2 -> pin to the
+## target's release: openzfs-2.2-linux. See /usr/share/zfs/compatibility.d/ for the
+## available profiles. Unset = enable all features the running ZFS supports.
+#POOL_COMPATIBILITY="openzfs-2.2-linux"
+
 ## --- Optional: root mirror (for zfs-mirror.sh) -------------------------------
 ## The /dev/disk/by-id/ name of the second disk to attach as a root mirror.
 #MIRRORDISKID="nvme-Samsung_SSD_980_PRO_1TB_S5YYYY"
