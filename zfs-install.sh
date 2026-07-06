@@ -67,6 +67,8 @@ Config file variables:
                     (e.g. a ZFS special vdev). Default: 0 = root uses whole disk.
     ASHIFT        - ZFS pool ashift (default: 12)
     NETPLAN_FILE  - Path to a netplan YAML installed verbatim (default: DHCP)
+    AUTHORIZED_KEYS - Path to a file of SSH public keys, copied verbatim into
+                    ~USERNAME/.ssh/authorized_keys (default: none = password-only)
 
 Example config:
   DISKID="nvme-Samsung_SSD_980_PRO_1TB_S5XXXX"
@@ -99,6 +101,7 @@ load_config() {
     ROOT_SIZE="${ROOT_SIZE:-0}"       ## 0 = root takes the whole disk; else bounded root + a reserved partition (rest) for a later vdev (e.g. ZFS special)
     ASHIFT="${ASHIFT:-12}"
     NETPLAN_FILE="${NETPLAN_FILE:-}"  ## if set, this netplan YAML is installed verbatim; else DHCP autoconfig
+    AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-}" ## if set, this file's pubkeys go into ~USERNAME/.ssh/authorized_keys
 
     case "$BOOT_MODE" in
         uefi|bios) ;;
@@ -125,6 +128,7 @@ load_config() {
     echo "  Root size:   ${ROOT_SIZE} (0 = whole disk)"
     echo "  ashift:      $ASHIFT"
     if [ -n "$NETPLAN_FILE" ]; then echo "  Netplan:     $NETPLAN_FILE (verbatim)"; else echo "  Netplan:     DHCP (auto)"; fi
+    if [ -n "$AUTHORIZED_KEYS" ]; then echo "  SSH keys:    $AUTHORIZED_KEYS"; else echo "  SSH keys:    none (password-only)"; fi
 }
 
 ##============================================================================
@@ -637,6 +641,19 @@ done
 
 echo "$USERNAME:$USERPASS" | chpasswd
 EOCHROOT
+
+    ## Bake in SSH public keys so config-management/CI + operators can reach the
+    ## box before any password login. AUTHORIZED_KEYS is a file of pubkeys copied
+    ## verbatim into ~USERNAME/.ssh/authorized_keys (same file-path convention as
+    ## NETPLAN_FILE; resolved relative to the script dir if not an absolute path).
+    if [ -n "$AUTHORIZED_KEYS" ]; then
+        [ -f "$AUTHORIZED_KEYS" ] || AUTHORIZED_KEYS="$SCRIPT_DIR/$AUTHORIZED_KEYS"
+        [ -f "$AUTHORIZED_KEYS" ] || die "AUTHORIZED_KEYS not found: $AUTHORIZED_KEYS"
+        log "Installing authorized_keys for $USERNAME from $AUTHORIZED_KEYS"
+        install -d -m 700 "$MOUNTPOINT/home/$USERNAME/.ssh"
+        install -m 600 "$AUTHORIZED_KEYS" "$MOUNTPOINT/home/$USERNAME/.ssh/authorized_keys"
+        chroot "$MOUNTPOINT" chown -R "$USERNAME:$USERNAME" "/home/$USERNAME/.ssh"
+    fi
 }
 
 fix_mount_ordering() {
