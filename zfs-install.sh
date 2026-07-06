@@ -69,6 +69,11 @@ Config file variables:
     NETPLAN_FILE  - Path to a netplan YAML installed verbatim (default: DHCP)
     AUTHORIZED_KEYS - Path to a file of SSH public keys, copied verbatim into
                     ~USERNAME/.ssh/authorized_keys (default: none = password-only)
+    POOL_COMPATIBILITY - zpool 'compatibility' profile capping pool features so an
+                    OLDER target ZFS can import the pool. Matters when the rescue's ZFS
+                    is newer than the installed distro's (Hetzner rescue builds the
+                    LATEST; Ubuntu noble ships 2.2). e.g. openzfs-2.2-linux
+                    (default: unset = all features the running ZFS supports)
 
 Example config:
   DISKID="nvme-Samsung_SSD_980_PRO_1TB_S5XXXX"
@@ -102,6 +107,7 @@ load_config() {
     ASHIFT="${ASHIFT:-12}"
     NETPLAN_FILE="${NETPLAN_FILE:-}"  ## if set, this netplan YAML is installed verbatim; else DHCP autoconfig
     AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-}" ## if set, this file's pubkeys go into ~USERNAME/.ssh/authorized_keys
+    POOL_COMPATIBILITY="${POOL_COMPATIBILITY:-}" ## if set, zpool create -o compatibility=<this> (cap features for an older target ZFS)
 
     case "$BOOT_MODE" in
         uefi|bios) ;;
@@ -129,6 +135,7 @@ load_config() {
     echo "  ashift:      $ASHIFT"
     if [ -n "$NETPLAN_FILE" ]; then echo "  Netplan:     $NETPLAN_FILE (verbatim)"; else echo "  Netplan:     DHCP (auto)"; fi
     if [ -n "$AUTHORIZED_KEYS" ]; then echo "  SSH keys:    $AUTHORIZED_KEYS"; else echo "  SSH keys:    none (password-only)"; fi
+    if [ -n "$POOL_COMPATIBILITY" ]; then echo "  Pool compat: $POOL_COMPATIBILITY"; else echo "  Pool compat: (all features of running ZFS)"; fi
 }
 
 ##============================================================================
@@ -290,6 +297,7 @@ create_zfs_pool() {
     zpool create -f \
         -o ashift="$ASHIFT" \
         -o autotrim=on \
+        ${POOL_COMPATIBILITY:+-o compatibility="$POOL_COMPATIBILITY"} \
         -O acltype=posixacl \
         -O canmount=off \
         -O compression="$COMPRESSION" \
