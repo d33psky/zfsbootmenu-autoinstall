@@ -194,9 +194,24 @@ setup_bios_boot() {
     log "Installing syslinux"
     run extlinux --install "$mnt"
 
-    # Install MBR
-    log "Installing MBR"
-    run dd if=/usr/lib/syslinux/mbr/mbr.bin of="$mirror_dev" bs=440 count=1 conv=notrunc
+    # Ensure the GPT "legacy BIOS bootable" attribute on the mirror boot partition.
+    # sgdisk -R replicates it from the primary, but set it explicitly to match the
+    # installer (zfs-install.sh: sgdisk -A <boot>:set:2) so gptmbr.bin has a partition
+    # flagged to chain-load even if -R behaviour ever changes.
+    run sgdisk -A 1:set:2 "$mirror_dev"
+
+    # Install MBR boot code. MUST be gptmbr.bin (GPT-aware) -- the same loader the
+    # primary got. Plain mbr.bin reads the (protective) MBR partition table for an
+    # active partition, which a GPT disk does not have, so a mbr.bin mirror would
+    # FAIL to boot standalone when the primary NVMe is gone -- silently defeating the
+    # mirror. Search the same paths the installer does.
+    log "Installing MBR (gptmbr)"
+    local gptmbr=""
+    for loc in /usr/lib/syslinux/mbr/gptmbr.bin /usr/lib/syslinux/gptmbr.bin; do
+        [ -f "$loc" ] && gptmbr="$loc" && break
+    done
+    [ -n "$gptmbr" ] || gptmbr="/usr/lib/syslinux/mbr/gptmbr.bin"
+    run dd if="$gptmbr" of="$mirror_dev" bs=440 count=1 conv=notrunc
 
     if [ -z "$DRYRUN" ]; then
         umount "$mnt"
