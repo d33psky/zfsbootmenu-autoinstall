@@ -184,7 +184,17 @@ EOF
 
 install_live_packages() {
     log "Installing live environment packages"
-    apt-get -yq install debootstrap software-properties-common gdisk zfs-initramfs
+    apt-get -yq install debootstrap software-properties-common gdisk
+    ## ZFS in the LIVE/rescue env is needed only to CREATE the pool. If it's already
+    ## present, USE it and do NOT apt-install a packaged ZFS: on the Hetzner rescue you
+    ## pre-run its install_openzfs.sh (the rescue's custom kernel has no matching distro
+    ## zfs-dkms, so the packaged 2.1.x can't build against it and the install dies right
+    ## here). Only fall back to apt where the live env ships no ZFS at all.
+    if modprobe zfs 2>/dev/null; then
+        log "  ZFS already available in the live env ($(zpool version 2>/dev/null | head -1)) - skipping apt zfs"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get -yq install zfs-initramfs
+    fi
     if service --status-all 2>/dev/null | grep -Fq 'zfs-zed'; then
         systemctl stop zfs-zed
     fi
@@ -327,12 +337,46 @@ create_datasets() {
 ## System installation
 ##============================================================================
 
+## Make the LIVE env's debootstrap able to bootstrap the target release, whatever the
+## live env is. On an Ubuntu live env this is a no-op; on another (e.g. the Hetzner
+## Debian rescue) debootstrap lacks the target's suite script AND archive keyring.
+## This is also the seam for future non-Ubuntu targets.
+prepare_debootstrap_for_target() {
+    log "Preparing debootstrap for target: $UBUNTU_VER"
+    ## (1) Suite script: an older live-env debootstrap may not know the target
+    ## codename; all Ubuntu releases use the generic 'gutsy' script.
+    if [ ! -e "/usr/share/debootstrap/scripts/$UBUNTU_VER" ]; then
+        ln -sf gutsy "/usr/share/debootstrap/scripts/$UBUNTU_VER"
+        log "  debootstrap script $UBUNTU_VER -> gutsy"
+    fi
+    ## (2) Ubuntu archive keyring: already present on an Ubuntu live env; elsewhere
+    ## fetch it from the target archive's ubuntu-keyring package (it is not a Debian
+    ## package, so 'apt install ubuntu-keyring' won't work on the Debian rescue).
+    if [ ! -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]; then
+        apt-get -yq install ubuntu-keyring 2>/dev/null || true
+    fi
+    if [ ! -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]; then
+        log "  fetching ubuntu-keyring from $UBUNTU_ARCHIVE"
+        local d deb url="$UBUNTU_ARCHIVE/pool/main/u/ubuntu-keyring/"
+        d="$(mktemp -d)"
+        ( cd "$d" || exit 1
+          deb="$(wget -qO- "$url" | grep -oE 'ubuntu-keyring_[^"]+_all\.deb' | sort -V | tail -1)"
+          [ -n "$deb" ] && wget -q "$url$deb" && dpkg-deb -x "$deb" . \
+            && install -m644 usr/share/keyrings/ubuntu-archive-keyring.gpg /usr/share/keyrings/ )
+        rm -rf "$d"
+    fi
+    [ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ] \
+        || die "Could not obtain the Ubuntu archive keyring for debootstrap"
+}
+
 run_debootstrap() {
     log "Running debootstrap ($UBUNTU_VER)"
     local free
     free="$(df -k --output=avail "$MOUNTPOINT" | tail -n1)"
     [ "$free" -ge 5242880 ] || die "Less than 5GB free on target"
-    debootstrap "$UBUNTU_VER" "$MOUNTPOINT"
+    prepare_debootstrap_for_target
+    debootstrap --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
+        "$UBUNTU_VER" "$MOUNTPOINT" "$UBUNTU_ARCHIVE"
 }
 
 configure_system_base() {
