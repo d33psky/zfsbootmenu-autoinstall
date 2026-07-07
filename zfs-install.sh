@@ -160,9 +160,28 @@ check_environment() {
 
 validate_boot_mode() {
     if [ "$BOOT_MODE" = "uefi" ] && [ ! -d /sys/firmware/efi ]; then
-        echo "WARNING: BOOT_MODE=uefi but no EFI firmware detected!"
-        echo "Continuing in 5 seconds (will likely fail at bootloader install)..."
-        sleep 5
+        # Hard fail: a UEFI install from a legacy-booted environment produces an
+        # UNBOOTABLE system, silently. efibootmgr cannot register an NVRAM boot
+        # entry without efivars, so refind falls back to installing only the
+        # removable-media path (\EFI\BOOT\BOOTX64.EFI) and reports success -- which
+        # boots ONLY if the target firmware itself is UEFI. If the firmware is
+        # legacy BIOS (the Hetzner default on many servers) the ESP is ignored
+        # entirely and the box never boots. Refuse rather than "complete" a trap.
+        echo "ERROR: BOOT_MODE=uefi but the installer is running in LEGACY BIOS mode" >&2
+        echo "       (no /sys/firmware/efi present)." >&2
+        echo "" >&2
+        echo "  A UEFI install from here cannot register a UEFI boot entry and will" >&2
+        echo "  likely produce a system that does not boot. Fix one of:" >&2
+        echo "    - boot the install environment in UEFI mode, then rerun; or" >&2
+        echo "    - set BOOT_MODE=\"bios\" if the target firmware is legacy BIOS." >&2
+        echo "" >&2
+        echo "  If you are CERTAIN the target firmware is UEFI and want to rely on the" >&2
+        echo "  \\EFI\\BOOT\\BOOTX64.EFI removable-media fallback, rerun with" >&2
+        echo "  ALLOW_UEFI_FROM_BIOS=1 to override this check." >&2
+        if [ "${ALLOW_UEFI_FROM_BIOS:-0}" != "1" ]; then
+            die "boot-mode mismatch: uefi requested from a legacy-booted installer"
+        fi
+        echo "ALLOW_UEFI_FROM_BIOS=1 set -- continuing despite legacy-booted installer." >&2
     elif [ "$BOOT_MODE" = "bios" ]; then
         log "BIOS boot mode (syslinux + MBR)"
     fi
