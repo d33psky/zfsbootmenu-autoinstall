@@ -144,28 +144,37 @@ load_config() {
                                        ## target kernel (org.zfsbootmenu:commandline) - e.g.
                                        ## "console=tty0 console=ttyS0" or "iommu=pt"
 
+    ## The key/CA/dropbear-keys FILES are consumed by `initial` only - the
+    ## postreboot phase runs on the installed box, where preserve_install_files
+    ## kept just the .conf (the key already lives at /etc/zfs/<pool>.key there).
+    ## Requiring them for every action broke postreboot on the first encrypted
+    ## box. Value-sanity checks still apply to all actions.
     case "$ENCRYPTION" in
         on)
-            [ -n "$KEYFILE" ] || die "ENCRYPTION=on requires KEYFILE"
-            [ -f "$KEYFILE" ] || KEYFILE="$SCRIPT_DIR/$KEYFILE"
-            [ -f "$KEYFILE" ] || die "KEYFILE not found: $KEYFILE"
-            [ "$(stat -c%s "$KEYFILE")" -eq 32 ] || die "KEYFILE must be exactly 32 raw bytes (head -c 32 /dev/urandom > key)"
+            if [ "${ACTION:-}" = "initial" ]; then
+                [ -n "$KEYFILE" ] || die "ENCRYPTION=on requires KEYFILE"
+                [ -f "$KEYFILE" ] || KEYFILE="$SCRIPT_DIR/$KEYFILE"
+                [ -f "$KEYFILE" ] || die "KEYFILE not found: $KEYFILE"
+                [ "$(stat -c%s "$KEYFILE")" -eq 32 ] || die "KEYFILE must be exactly 32 raw bytes (head -c 32 /dev/urandom > key)"
+                if [ -n "$ZBM_KEYFETCH_CA" ]; then
+                    [ -f "$ZBM_KEYFETCH_CA" ] || ZBM_KEYFETCH_CA="$SCRIPT_DIR/$ZBM_KEYFETCH_CA"
+                    [ -f "$ZBM_KEYFETCH_CA" ] || die "ZBM_KEYFETCH_CA not found: $ZBM_KEYFETCH_CA"
+                fi
+            fi
             if [ -n "$ZBM_KEYFETCH_URL" ] && [ -z "$ZBM_NET_ARGS" ]; then
                 die "ZBM_KEYFETCH_URL requires ZBM_NET_ARGS (the ZBM initramfs needs network to fetch the key)"
-            fi
-            if [ -n "$ZBM_KEYFETCH_CA" ]; then
-                [ -f "$ZBM_KEYFETCH_CA" ] || ZBM_KEYFETCH_CA="$SCRIPT_DIR/$ZBM_KEYFETCH_CA"
-                [ -f "$ZBM_KEYFETCH_CA" ] || die "ZBM_KEYFETCH_CA not found: $ZBM_KEYFETCH_CA"
             fi
             ;;
         off) ;;
         *) die "ENCRYPTION must be 'on' or 'off', got: $ENCRYPTION" ;;
     esac
     if [ "$ZBM_DROPBEAR" = "on" ]; then
-        [ -n "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR=on requires ZBM_DROPBEAR_KEYS (or AUTHORIZED_KEYS)"
-        [ -f "$ZBM_DROPBEAR_KEYS" ] || ZBM_DROPBEAR_KEYS="$SCRIPT_DIR/$ZBM_DROPBEAR_KEYS"
-        [ -f "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR_KEYS not found: $ZBM_DROPBEAR_KEYS"
         [ -n "$ZBM_NET_ARGS" ] || die "ZBM_DROPBEAR=on requires ZBM_NET_ARGS (the ZBM initramfs needs network for ssh)"
+        if [ "${ACTION:-}" = "initial" ]; then
+            [ -n "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR=on requires ZBM_DROPBEAR_KEYS (or AUTHORIZED_KEYS)"
+            [ -f "$ZBM_DROPBEAR_KEYS" ] || ZBM_DROPBEAR_KEYS="$SCRIPT_DIR/$ZBM_DROPBEAR_KEYS"
+            [ -f "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR_KEYS not found: $ZBM_DROPBEAR_KEYS"
+        fi
     fi
 
     case "$BOOT_MODE" in
