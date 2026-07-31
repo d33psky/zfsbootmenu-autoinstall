@@ -326,7 +326,14 @@ cleanup_target_disk() {
             ## A previous run that died after its bind-mounts leaves rbind'd
             ## /dev|/proc|/sys submounts umount -R can't unwind - lazy-force
             ## them so the pool can actually be released (found on real HW).
+            ## make-rslave FIRST (same as unmount_all): the rbinds share mount
+            ## propagation with the LIVE env, and without it the lazy umounts
+            ## propagate back and rip out the host's own /dev/pts (this took
+            ## down logind + all new ssh PTYs on the HEL rescue - real scar).
             if grep -q "$MOUNTPOINT" /proc/mounts; then
+                mount --make-rslave "$MOUNTPOINT"/dev  2>/dev/null || true
+                mount --make-rslave "$MOUNTPOINT"/proc 2>/dev/null || true
+                mount --make-rslave "$MOUNTPOINT"/sys  2>/dev/null || true
                 grep "$MOUNTPOINT" /proc/mounts | cut -f2 -d" " | sort -r | xargs -r umount -lf 2>/dev/null || true
                 sleep 2
             fi
