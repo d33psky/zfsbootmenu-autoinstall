@@ -34,7 +34,9 @@ QEMU_BASE=(
     -machine q35 -cpu host -enable-kvm -m "$RAM" -smp 4
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
     -drive if=pflash,format=raw,file="$OVMF_VARS"
-    -nic user,model=virtio-net-pci,hostfwd=tcp::"${SSH_PORT}"-:22
+    ## 2222 -> guest sshd; 2223 -> dropbear in the ZBM initramfs (encrypted-
+    ## install rescue testing; harmless when nothing listens on 222)
+    -nic user,model=virtio-net-pci,hostfwd=tcp::"${SSH_PORT}"-:22,hostfwd=tcp::2223-:222
     -display none
 )
 

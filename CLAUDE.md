@@ -137,6 +137,61 @@ ssh-keygen -f ~/.ssh/known_hosts -R '[localhost]:2222'
 - **`spl_hostid=` on the kernel cmdline is parsed DECIMAL** unless it has hex letters or a `0x` prefix. `zdb` prints hostid in DECIMAL; `hostid`(1) and `/etc/hostid` are HEX. Mixing these up silently sets the wrong hostid - and writing to the pool then stamps it into the labels.
 - **`generate-zbm` names the kernel image `vmlinuz.old-bootmenu`** even on a fresh build - cosmetic; rEFInd auto-scans and boots it fine.
 
+### Encrypted-install testing (unattended unlock + dropbear rescue)
+
+Uses `configs/qemu-uefi-enc-test.conf`. The harness host stands in for the key server
+(guest reaches it at `10.0.2.2` over QEMU user-net); dropbear is reachable via the
+built-in `2223 -> 222` forward. All commands run from the repo root.
+
+**One-time prep (key material lives in gitignored `test/`):**
+```bash
+./test-uefi-qemu.sh create                                  # blank target disks (if absent)
+head -c 32 /dev/urandom > test/qemu-test.key
+grep ssh- test/user-data | sed 's/^ *- *//' > test/authorized_keys
+(cd test && python3 -m http.server 8437 &)                  # the "key server"
+```
+
+**Install (same flow as a plain install, encrypted config):**
+```bash
+./test-uefi-headless.sh prep
+./test-uefi-headless.sh live &                              # wait for ssh
+scp -P 2222 zfs-install.sh configs/qemu-uefi-enc-test.conf <you>@localhost:
+scp -P 2222 test/qemu-test.key test/authorized_keys <you>@localhost:test/
+ssh -p 2222 <you>@localhost sudo bash zfs-install.sh qemu-uefi-enc-test.conf initial
+ssh -p 2222 <you>@localhost sudo poweroff
+```
+
+**Scenario A - unattended encrypted boot (key server up):**
+```bash
+./test-uefi-headless.sh installed &
+tail -f test/serial-installed.log
+#   expect: ZBM countdown -> "keyfetch: key loaded for zroot" -> login:
+ssh -p 2222 test@localhost                                  # password: test - the LOGIN test
+#   inside: zpool status ; zfs get encryption,keystatus zroot ; systemctl --failed
+```
+
+**Scenario B - dropbear rescue (key server DOWN):**
+```bash
+kill $(ps -C qemu-system-x86_64 -o pid=)   # stop the Scenario-A VM
+                                           # (NOT pkill -x: >15-char comm never matches)
+kill %1                                    # stop the key server (or the http.server pid)
+./test-uefi-headless.sh installed &
+tail -f test/serial-installed.log          # keyfetch retries ~2 min, then emergency prompt
+ssh -p 2223 root@localhost                 # dropbear in the ZBM initramfs (pubkey-only)
+#   in ZBM:  zfs get keystatus zroot      -> unavailable
+# from another terminal, push the key:
+cat test/qemu-test.key | ssh -p 2223 root@localhost 'cat > /tmp/k'
+#   in ZBM:  zfs load-key -L file:///tmp/k zroot
+#   in ZBM:  zfs get keystatus zroot     -> verify: available (BEFORE calling zbm)
+#   in ZBM:  zbm                          -> select the BE, Enter -> box kexecs (ssh drops)
+tail -f test/serial-installed.log          # -> login: ; then the Scenario-A login test
+```
+
+Notes: the fetch URL is IP-literal on purpose (no DNS in the initramfs). During the
+keyfetch retry window dropbear may be slow to answer - wait it out (~2 min). Booting
+`live` mode after an install lands in rEFInd/ZBM instead of the cloud image (the
+install's NVRAM boot entry wins); `prep` resets the NVRAM.
+
 ## Config file format
 
 ```bash
