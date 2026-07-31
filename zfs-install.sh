@@ -323,6 +323,13 @@ cleanup_target_disk() {
             echo "  Destroying pool '$pool' on target disk"
             zfs unmount -a 2>/dev/null || true
             umount -R "$MOUNTPOINT" 2>/dev/null || true
+            ## A previous run that died after its bind-mounts leaves rbind'd
+            ## /dev|/proc|/sys submounts umount -R can't unwind - lazy-force
+            ## them so the pool can actually be released (found on real HW).
+            if grep -q "$MOUNTPOINT" /proc/mounts; then
+                grep "$MOUNTPOINT" /proc/mounts | cut -f2 -d" " | sort -r | xargs -r umount -lf 2>/dev/null || true
+                sleep 2
+            fi
             zpool destroy -f "$pool" 2>/dev/null || zpool export -f "$pool" 2>/dev/null || true
             ## Fail LOUDLY if it survived: proceeding would wipe partitions under
             ## an imported pool and wedge the ZFS state until a reboot (been there).
