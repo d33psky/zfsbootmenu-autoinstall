@@ -808,7 +808,10 @@ ZBMEOF
         local ca_path=""
         if [ -n "$ZBM_KEYFETCH_CA" ]; then
             ca_path="/etc/zfsbootmenu/keyfetch-ca.pem"
-            install -m 644 "$ZBM_KEYFETCH_CA" "$MOUNTPOINT$ca_path"
+            ## -D: /etc/zfsbootmenu doesn't exist in the target yet (the mkdir
+            ## below and ZBM's make install both come later). The harness never
+            ## caught this: its test config uses plain http:// with no CA.
+            install -D -m 644 "$ZBM_KEYFETCH_CA" "$MOUNTPOINT$ca_path"
         fi
         ## load-key.d is the documented stage for this: it runs immediately
         ## before EVERY unlock attempt - including the zbm.timeout auto-boot
