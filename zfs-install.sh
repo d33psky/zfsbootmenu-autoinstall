@@ -948,6 +948,24 @@ DROPBEAREOF
 ## failed regen would leave the first-pass images (no keyfetch/dropbear) on
 ## the ESP - a boot-to-prompt trap.
 generate-zbm --debug || { echo "FATAL: ZBM regen with encryption add-ons failed"; exit 1; }
+
+## BIOS: the regen ROTATES/PRUNES the image names the main body symlinked
+## (vmlinuz-bootmenu -> vmlinuz.old-bootmenu etc.), and syslinux loads FIXED
+## names from its cfg - unlike rEFInd it scans nothing. Without this refresh
+## the box goes DARK with nothing to load (found on the first real BIOS
+## encrypted install; the QEMU encryption harness is UEFI-only).
+if [ "$BOOT_MODE" = "bios" ]; then
+    cd /boot/syslinux
+    for kernel in vmlinuz*-bootmenu; do
+        [ -e "\$kernel" ] && ln -sf "\$kernel" vmlinuz.EFI && ln -sf "\$kernel" vmlinuz-backup.EFI && echo "Relinked \$kernel -> vmlinuz.EFI"
+        break
+    done
+    for initrd in initramfs*-bootmenu.img; do
+        [ -e "\$initrd" ] && ln -sf "\$initrd" initramfs.img && ln -sf "\$initrd" initramfs-backup.img && echo "Relinked \$initrd -> initramfs.img"
+        break
+    done
+    [ -e vmlinuz.EFI ] && [ -e initramfs.img ] || { echo "FATAL: syslinux image links missing after regen"; exit 1; }
+fi
 REGENEOF
     fi
 
