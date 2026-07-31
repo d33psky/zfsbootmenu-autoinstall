@@ -426,7 +426,9 @@ create_zfs_pool() {
     ## target initrd FROM the unlocked root, and that initrd carries the key.
     local encryption_opts=()
     if [ "$ENCRYPTION" = "on" ]; then
-        install -m 400 "$KEYFILE" /etc/zfs/"$POOL_NAME".key
+        ## -D: /etc/zfs may not exist in the live env (e.g. the Hetzner rescue
+        ## builds ZFS from source - no package, no directory; found on real HW)
+        install -D -m 400 "$KEYFILE" /etc/zfs/"$POOL_NAME".key
         encryption_opts=(
             -O encryption=aes-256-gcm
             -O keyformat=raw
@@ -594,7 +596,7 @@ setup_encryption_target() {
     log "Setting up encryption key in target"
 
     ## The key inside the encrypted root, at the pool's keylocation path.
-    install -m 400 "$KEYFILE" "$MOUNTPOINT"/etc/zfs/"$POOL_NAME".key
+    install -D -m 400 "$KEYFILE" "$MOUNTPOINT"/etc/zfs/"$POOL_NAME".key
 
     ## Embed the key in the target initramfs so the kexec'd system imports and
     ## mounts its root without prompting or network. Safe because the initrd
