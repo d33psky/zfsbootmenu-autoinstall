@@ -74,6 +74,30 @@ Config file variables:
                     is newer than the installed distro's (Hetzner rescue builds the
                     LATEST; Ubuntu noble ships 2.2). e.g. openzfs-2.2-linux
                     (default: unset = all features the running ZFS supports)
+  Optional - native ZFS encryption (see configs/host.conf.sample for the full model):
+    ENCRYPTION    - "on" = encrypt the pool root (aes-256-gcm, keyformat raw).
+                    The key is embedded in the TARGET initramfs, which lives on
+                    the encrypted root itself - it never touches plaintext disk.
+                    ZFSBootMenu unlocks the pool at boot: via ZBM_KEYFETCH_URL
+                    (unattended) or an interactive prompt. (default: off)
+    KEYFILE       - Path to the raw 32-byte key used at install time. Generate:
+                    head -c 32 /dev/urandom > myhost.key   (never commit it)
+    ZBM_KEYFETCH_URL - URL the ZBM initramfs fetches the key from at boot
+                    (http:// or https://). Unset = ZBM prompts on console.
+    ZBM_KEYFETCH_CA - Path to a CA/cert PEM baked into the ZBM image and pinned
+                    for the fetch (self-signed key server). Unset = system CAs.
+    ZBM_NET_ARGS  - dracut network args for the ZBM initramfs, verbatim, e.g.
+                    "rd.neednet=1 ip=10.0.0.10::10.0.0.1:255.255.255.0::vlan40:none vlan=vlan40:eth0"
+                    Embedded in the image via /etc/cmdline.d (no bootloader edit).
+                    Required with ZBM_KEYFETCH_URL. Add a second ip= for IPv6.
+    ZBM_DROPBEAR  - "on" = dropbear ssh (pubkey-only) in the ZBM initramfs for
+                    remote rescue of a stuck boot. (default: off)
+    ZBM_DROPBEAR_KEYS - authorized_keys file for dropbear (default: AUTHORIZED_KEYS)
+    ZBM_DROPBEAR_PORT - dropbear port (default: 222)
+    CMDLINE_EXTRA - extra KERNEL parameters for both the ZBM bootloader entries
+                    and the target kernel (org.zfsbootmenu:commandline), e.g.
+                    "console=tty0 console=ttyS0" for serial-console visibility,
+                    or "iommu=pt". (default: none)
 
 Example config:
   DISKID="nvme-Samsung_SSD_980_PRO_1TB_S5XXXX"
@@ -108,6 +132,41 @@ load_config() {
     NETPLAN_FILE="${NETPLAN_FILE:-}"  ## if set, this netplan YAML is installed verbatim; else DHCP autoconfig
     AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-}" ## if set, this file's pubkeys go into ~USERNAME/.ssh/authorized_keys
     POOL_COMPATIBILITY="${POOL_COMPATIBILITY:-}" ## if set, zpool create -o compatibility=<this> (cap features for an older target ZFS)
+    ENCRYPTION="${ENCRYPTION:-off}"   ## on = native ZFS encryption on the pool root
+    KEYFILE="${KEYFILE:-}"            ## raw 32-byte key used at install time (never committed)
+    ZBM_KEYFETCH_URL="${ZBM_KEYFETCH_URL:-}" ## ZBM boot-time key fetch URL; unset = console prompt
+    ZBM_KEYFETCH_CA="${ZBM_KEYFETCH_CA:-}"   ## pinned CA/cert PEM for the fetch (self-signed server)
+    ZBM_NET_ARGS="${ZBM_NET_ARGS:-}"  ## dracut net args for the ZBM initramfs (ip=... vlan=... rd.neednet=1)
+    ZBM_DROPBEAR="${ZBM_DROPBEAR:-off}"      ## on = dropbear ssh in the ZBM initramfs (remote rescue)
+    ZBM_DROPBEAR_KEYS="${ZBM_DROPBEAR_KEYS:-$AUTHORIZED_KEYS}" ## authorized_keys for dropbear
+    ZBM_DROPBEAR_PORT="${ZBM_DROPBEAR_PORT:-222}"
+    CMDLINE_EXTRA="${CMDLINE_EXTRA:-}" ## extra KERNEL params for BOTH the ZBM entries and the
+                                       ## target kernel (org.zfsbootmenu:commandline) - e.g.
+                                       ## "console=tty0 console=ttyS0" or "iommu=pt"
+
+    case "$ENCRYPTION" in
+        on)
+            [ -n "$KEYFILE" ] || die "ENCRYPTION=on requires KEYFILE"
+            [ -f "$KEYFILE" ] || KEYFILE="$SCRIPT_DIR/$KEYFILE"
+            [ -f "$KEYFILE" ] || die "KEYFILE not found: $KEYFILE"
+            [ "$(stat -c%s "$KEYFILE")" -eq 32 ] || die "KEYFILE must be exactly 32 raw bytes (head -c 32 /dev/urandom > key)"
+            if [ -n "$ZBM_KEYFETCH_URL" ] && [ -z "$ZBM_NET_ARGS" ]; then
+                die "ZBM_KEYFETCH_URL requires ZBM_NET_ARGS (the ZBM initramfs needs network to fetch the key)"
+            fi
+            if [ -n "$ZBM_KEYFETCH_CA" ]; then
+                [ -f "$ZBM_KEYFETCH_CA" ] || ZBM_KEYFETCH_CA="$SCRIPT_DIR/$ZBM_KEYFETCH_CA"
+                [ -f "$ZBM_KEYFETCH_CA" ] || die "ZBM_KEYFETCH_CA not found: $ZBM_KEYFETCH_CA"
+            fi
+            ;;
+        off) ;;
+        *) die "ENCRYPTION must be 'on' or 'off', got: $ENCRYPTION" ;;
+    esac
+    if [ "$ZBM_DROPBEAR" = "on" ]; then
+        [ -n "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR=on requires ZBM_DROPBEAR_KEYS (or AUTHORIZED_KEYS)"
+        [ -f "$ZBM_DROPBEAR_KEYS" ] || ZBM_DROPBEAR_KEYS="$SCRIPT_DIR/$ZBM_DROPBEAR_KEYS"
+        [ -f "$ZBM_DROPBEAR_KEYS" ] || die "ZBM_DROPBEAR_KEYS not found: $ZBM_DROPBEAR_KEYS"
+        [ -n "$ZBM_NET_ARGS" ] || die "ZBM_DROPBEAR=on requires ZBM_NET_ARGS (the ZBM initramfs needs network for ssh)"
+    fi
 
     case "$BOOT_MODE" in
         uefi|bios) ;;
@@ -136,6 +195,15 @@ load_config() {
     if [ -n "$NETPLAN_FILE" ]; then echo "  Netplan:     $NETPLAN_FILE (verbatim)"; else echo "  Netplan:     DHCP (auto)"; fi
     if [ -n "$AUTHORIZED_KEYS" ]; then echo "  SSH keys:    $AUTHORIZED_KEYS"; else echo "  SSH keys:    none (password-only)"; fi
     if [ -n "$POOL_COMPATIBILITY" ]; then echo "  Pool compat: $POOL_COMPATIBILITY"; else echo "  Pool compat: (all features of running ZFS)"; fi
+    if [ "$ENCRYPTION" = "on" ]; then
+        echo "  Encryption:  on (aes-256-gcm, keyfile $KEYFILE)"
+        if [ -n "$ZBM_KEYFETCH_URL" ]; then echo "  ZBM unlock:  fetch $ZBM_KEYFETCH_URL${ZBM_KEYFETCH_CA:+ (pinned CA $ZBM_KEYFETCH_CA)}"; else echo "  ZBM unlock:  console prompt"; fi
+        [ -n "$ZBM_NET_ARGS" ] && echo "  ZBM net:     $ZBM_NET_ARGS"
+    else
+        echo "  Encryption:  off"
+    fi
+    if [ "$ZBM_DROPBEAR" = "on" ]; then echo "  ZBM ssh:     dropbear port $ZBM_DROPBEAR_PORT, keys $ZBM_DROPBEAR_KEYS"; fi
+    if [ -n "$CMDLINE_EXTRA" ]; then echo "  Cmdline+:    $CMDLINE_EXTRA (ZBM entries + target kernel)"; fi
 }
 
 ##============================================================================
@@ -254,7 +322,13 @@ cleanup_target_disk() {
         if zpool status "$pool" 2>/dev/null | grep -q "$DISKID"; then
             echo "  Destroying pool '$pool' on target disk"
             zfs unmount -a 2>/dev/null || true
+            umount -R "$MOUNTPOINT" 2>/dev/null || true
             zpool destroy -f "$pool" 2>/dev/null || zpool export -f "$pool" 2>/dev/null || true
+            ## Fail LOUDLY if it survived: proceeding would wipe partitions under
+            ## an imported pool and wedge the ZFS state until a reboot (been there).
+            if zpool list -H -o name 2>/dev/null | grep -qx "$pool"; then
+                die "Pool '$pool' on the target disk is still imported (busy) after destroy/export - reboot the live environment and rerun"
+            fi
         fi
     done
     sleep 1
@@ -263,6 +337,25 @@ cleanup_target_disk() {
     for part in /dev/disk/by-id/"$DISKID"-part*; do
         [ -e "$part" ] && wipefs -a "$part" 2>/dev/null || true
     done
+    ## Clear leftover ZFS labels explicitly: wipefs misses the back-of-partition
+    ## copies, and a previous install's pool - even cleanly exported, and
+    ## especially an ENCRYPTED one we can't import to destroy - otherwise blocks
+    ## zpool create with "is part of active pool", -f notwithstanding.
+    for part in /dev/disk/by-id/"$DISKID"-part*; do
+        [ -e "$part" ] && zpool labelclear -f "$part" 2>/dev/null || true
+    done
+    zpool labelclear -f /dev/disk/by-id/"$DISKID" 2>/dev/null || true
+
+    ## The FUTURE mirror disk needs the same sweep: a stale pool label there
+    ## (reused disk, previous mirror test) makes the target initramfs fail with
+    ## "cannot import 'zroot': more than one matching pool" at first boot -
+    ## zfs-mirror.sh only attaches it later, AFTER that landmine has gone off.
+    if [ -n "${MIRRORDISKID:-}" ]; then
+        for part in /dev/disk/by-id/"$MIRRORDISKID"-part*; do
+            [ -e "$part" ] && zpool labelclear -f "$part" 2>/dev/null || true
+        done
+        zpool labelclear -f /dev/disk/by-id/"$MIRRORDISKID" 2>/dev/null || true
+    fi
     partprobe 2>/dev/null || true
     sleep 2
 }
@@ -323,6 +416,24 @@ create_zfs_pool() {
     ## import an unclean/degraded pool at boot - e.g. after one mirror disk dies.
     [ -e /etc/hostid ] || zgenhostid
     echo "  Pool hostid: $(hostid)"
+
+    ## Native encryption: the pool root is the encryptionroot, so every dataset
+    ## inherits it. keylocation points at /etc/zfs/<pool>.key - a path that exists
+    ## in BOTH worlds: in the live env now (installed here, so zpool create can read
+    ## it) and later inside the encrypted root of the target (setup_encryption_target),
+    ## where the target initramfs embeds it. The key therefore never touches
+    ## unencrypted storage: ZBM unlocks the pool (network fetch or prompt), reads the
+    ## target initrd FROM the unlocked root, and that initrd carries the key.
+    local encryption_opts=()
+    if [ "$ENCRYPTION" = "on" ]; then
+        install -m 400 "$KEYFILE" /etc/zfs/"$POOL_NAME".key
+        encryption_opts=(
+            -O encryption=aes-256-gcm
+            -O keyformat=raw
+            -O keylocation=file:///etc/zfs/"$POOL_NAME".key
+        )
+    fi
+
     zpool create -f \
         -o ashift="$ASHIFT" \
         -o autotrim=on \
@@ -335,6 +446,7 @@ create_zfs_pool() {
         -O relatime=on \
         -O xattr=sa \
         -O mountpoint=none \
+        "${encryption_opts[@]}" \
         -R "$MOUNTPOINT" \
         "$POOL_NAME" /dev/disk/by-id/"${DISKID}"-part"${ZFS_PART}"
 }
@@ -477,6 +589,30 @@ apt install --yes zfsutils-linux zfs-zed zfs-initramfs
 EOCHROOT
 }
 
+setup_encryption_target() {
+    [ "$ENCRYPTION" = "on" ] || return 0
+    log "Setting up encryption key in target"
+
+    ## The key inside the encrypted root, at the pool's keylocation path.
+    install -m 400 "$KEYFILE" "$MOUNTPOINT"/etc/zfs/"$POOL_NAME".key
+
+    ## Embed the key in the target initramfs so the kexec'd system imports and
+    ## mounts its root without prompting or network. Safe because the initrd
+    ## lives on the encrypted root itself (ZBM reads it post-unlock) and
+    ## update-initramfs runs with UMASK=0077 (set in install_zfsbootmenu).
+    ## Newer zfs-initramfs hooks copy file:// keys themselves; this makes it
+    ## explicit and version-proof (cp -p keeps the 0400 mode in the initrd).
+    cat > "$MOUNTPOINT"/etc/initramfs-tools/hooks/zfs-keyfile <<KEYHOOK
+#!/bin/sh
+PREREQ="zfs"
+case "\$1" in prereqs) echo "\$PREREQ"; exit 0;; esac
+. /usr/share/initramfs-tools/hook-functions
+mkdir -p "\${DESTDIR}/etc/zfs"
+cp -p /etc/zfs/${POOL_NAME}.key "\${DESTDIR}/etc/zfs/"
+KEYHOOK
+    chmod 755 "$MOUNTPOINT"/etc/initramfs-tools/hooks/zfs-keyfile
+}
+
 setup_boot_partition() {
     log "Setting up boot partition ($BOOT_MODE)"
     local disk="/dev/disk/by-id/$DISKID"
@@ -542,7 +678,7 @@ install_zfsbootmenu() {
 
     ## Set ZFS boot commandline
     chroot "$MOUNTPOINT" /bin/bash -x <<EOCHROOT
-zfs set org.zfsbootmenu:commandline="spl_hostid=\$(hostid) ro" "$POOL_NAME"/ROOT
+zfs set org.zfsbootmenu:commandline="spl_hostid=\$(hostid) ro${CMDLINE_EXTRA:+ $CMDLINE_EXTRA}" "$POOL_NAME"/ROOT
 echo "UMASK=0077" > /etc/initramfs-tools/conf.d/umask.conf
 EOCHROOT
 
@@ -642,7 +778,159 @@ if [ "$BOOT_MODE" = "uefi" ]; then
 "Boot to menu"  "zbm.show ro loglevel=4"
 REFIND
 fi
+
+## Extra kernel params (CMDLINE_EXTRA) on the ZBM entries - kernel-proper
+## params like console= must live here, not in the image's /etc/cmdline.d.
+if [ -n "$CMDLINE_EXTRA" ]; then
+    if [ "$BOOT_MODE" = "bios" ]; then
+        sed -i "s@ro loglevel=4@ro loglevel=4 $CMDLINE_EXTRA@g" /boot/syslinux/syslinux.cfg
+    else
+        sed -i "s@ro loglevel=4@ro loglevel=4 $CMDLINE_EXTRA@g" /boot/efi/EFI/zbm/refind_linux.conf
+    fi
+fi
 ZBMEOF
+
+    ## --- Optional encryption add-ons, appended to the ZBM install script -----
+    ## These run AFTER the main body above (so config.yaml + bootloader configs
+    ## exist) and end with a second generate-zbm to rebuild the images with the
+    ## dracut additions. Guarded here at generation time so a plain install's
+    ## ZBM script is unchanged.
+
+    ## Boot-time key fetch: dracut networking + curl + a ZBM setup hook that
+    ## fetches the key and load-keys the pool, making the boot countdown
+    ## unattended. Any failure falls back to ZBM's normal console prompt.
+    ## The hook + dracut conf are written DIRECTLY into the target here (not via
+    ## the chroot script) so the hook body needs no nested-heredoc escaping:
+    ## it is fully literal ('HOOK'), with __PLACEHOLDERS__ substituted by sed.
+    if [ "$ENCRYPTION" = "on" ] && [ -n "$ZBM_KEYFETCH_URL" ]; then
+        local ca_path=""
+        if [ -n "$ZBM_KEYFETCH_CA" ]; then
+            ca_path="/etc/zfsbootmenu/keyfetch-ca.pem"
+            install -m 644 "$ZBM_KEYFETCH_CA" "$MOUNTPOINT$ca_path"
+        fi
+        ## load-key.d is the documented stage for this: it runs immediately
+        ## before EVERY unlock attempt - including the zbm.timeout auto-boot
+        ## path. (setup.d hooks are SKIPPED when the countdown expires - a
+        ## keyfetch hook there never runs unattended; found the hard way.)
+        ## Hooks under /etc/zfsbootmenu/hooks/<stage>.d are auto-installed by
+        ## the ZBM dracut module (zfsbootmenu_hook_root default).
+        mkdir -p "$MOUNTPOINT"/etc/zfsbootmenu/hooks/load-key.d \
+                 "$MOUNTPOINT"/etc/zfsbootmenu/dracut.conf.d
+
+        cat > "$MOUNTPOINT"/etc/zfsbootmenu/hooks/load-key.d/keyfetch.sh <<'HOOK'
+#!/bin/sh
+## ZBM load-key.d hook: runs right before ZBM attempts to unlock a dataset
+## (ZBM_ENCRYPTION_ROOT/ZBM_LOCKED_FS are set by ZBM). Fetch the pool key
+## from the key server and load it so the unlock - menu or countdown -
+## proceeds unattended. Prefer an IP-literal URL - there is no DNS in this
+## initramfs. On failure ZBM falls back to its console prompt (and dropbear,
+## if built in). The retry loop rides out DHCP still settling.
+POOL="__POOL__"
+URL="__URL__"
+CA="__CA__"
+[ "${ZBM_ENCRYPTION_ROOT:-$POOL}" = "$POOL" ] || exit 0
+[ "$(zfs get -H -o value keystatus "$POOL" 2>/dev/null)" = "unavailable" ] || exit 0
+i=0
+while [ $i -lt 12 ]; do
+    if [ -n "$CA" ]; then
+        curl -sf --connect-timeout 5 --cacert "$CA" -o /zbm.key "$URL" && break
+    else
+        curl -sf --connect-timeout 5 -o /zbm.key "$URL" && break
+    fi
+    i=$((i+1)); sleep 5
+done
+if [ -s /zbm.key ]; then
+    zfs load-key -L file:///zbm.key "$POOL" && echo "keyfetch: key loaded for $POOL"
+fi
+rm -f /zbm.key
+exit 0
+HOOK
+        sed -i \
+            -e "s|__POOL__|$POOL_NAME|" \
+            -e "s|__URL__|$ZBM_KEYFETCH_URL|" \
+            -e "s|__CA__|$ca_path|" \
+            "$MOUNTPOINT"/etc/zfsbootmenu/hooks/load-key.d/keyfetch.sh
+        chmod 755 "$MOUNTPOINT"/etc/zfsbootmenu/hooks/load-key.d/keyfetch.sh
+
+        ## Networking for the ZBM initramfs rides INSIDE the image via
+        ## /etc/cmdline.d (the documented mechanism) - no bootloader-entry
+        ## editing needed for it. Kernel-proper params (console=...) can't go
+        ## here; those are CMDLINE_EXTRA's job on the bootloader entries.
+        mkdir -p "$MOUNTPOINT"/etc/cmdline.d
+        echo "$ZBM_NET_ARGS" > "$MOUNTPOINT"/etc/cmdline.d/dracut-network.conf
+
+        cat > "$MOUNTPOINT"/etc/zfsbootmenu/dracut.conf.d/keyfetch.conf <<DRACUTCONF
+add_dracutmodules+=" network-legacy "
+install_items+=" /usr/bin/curl ${ca_path:+$ca_path} "
+install_optional_items+=" /etc/cmdline.d/dracut-network.conf "
+DRACUTCONF
+
+        cat >> "$MOUNTPOINT"/tmp/install_zbm.sh <<'KEYFETCHEOF'
+
+## --- ZBM boot-time key fetch (unattended unlock) ---
+## dracut's network/network-legacy modules refuse to install without their
+## userspace tools (dhclient, arping) - a minimal debootstrap lacks them.
+apt-get install --yes --no-install-recommends dracut-network isc-dhcp-client iputils-arping
+KEYFETCHEOF
+    fi
+
+    ## Dropbear ssh in the ZBM initramfs (remote rescue of a stuck boot): the
+    ## dracut-crypt-ssh module per the upstream ZBM remote-access docs. Its
+    ## LUKS console/unlock helpers are compiled binaries we neither build nor
+    ## need - strip them from module-setup.sh or the dracut build fails.
+    ## Host keys are generated ONCE into /etc/dropbear on the target so ZBM
+    ## rebuilds keep a stable ssh host identity.
+    if [ "$ZBM_DROPBEAR" = "on" ]; then
+        install -D -m 600 "$ZBM_DROPBEAR_KEYS" "$MOUNTPOINT"/etc/dropbear/authorized_keys
+        cat >> "$MOUNTPOINT"/tmp/install_zbm.sh <<DROPBEAREOF
+
+## --- ZBM dropbear (remote rescue ssh) ---
+## Per the upstream ZBM remote-access docs. crypt-ssh depends on the dracut
+## network module (same userspace deps as the keyfetch block; idempotent) AND
+## on the dracut crypt module, which refuses to install without cryptsetup.
+apt-get install --yes --no-install-recommends dracut-network isc-dhcp-client iputils-arping
+apt-get install --yes --no-install-recommends dropbear-bin cryptsetup openssh-client
+[ -d /usr/local/src/dracut-crypt-ssh ] || \\
+    git clone https://github.com/dracut-crypt-ssh/dracut-crypt-ssh /usr/local/src/dracut-crypt-ssh
+cp -r /usr/local/src/dracut-crypt-ssh/modules/60crypt-ssh /usr/lib/dracut/modules.d/
+## Strip the LUKS console/unlock helper installs (compiled binaries we neither
+## build nor need - the docs' "remove the helper lines from install()" step).
+sed -i -E '/console_auth|console_peek|unlock/d' /usr/lib/dracut/modules.d/60crypt-ssh/module-setup.sh
+
+## Host keys: OpenSSH PEM format - the module converts them itself with
+## dropbearconvert at image build (dropbearkey-native keys break that step,
+## "dropbearconvert for RSA key failed"). Generated once and kept, so rebuilt
+## images keep a stable ssh identity.
+mkdir -p /etc/dropbear /etc/zfsbootmenu/dracut.conf.d
+for keytype in rsa ecdsa; do
+    [ -f "/etc/dropbear/ssh_host_\${keytype}_key" ] || \\
+        ssh-keygen -N "" -m PEM -t "\$keytype" -f "/etc/dropbear/ssh_host_\${keytype}_key"
+done
+
+cat > /etc/zfsbootmenu/dracut.conf.d/dropbear.conf <<DBCONF
+add_dracutmodules+=" crypt-ssh "
+install_optional_items+=" /etc/cmdline.d/dracut-network.conf "
+dropbear_port="$ZBM_DROPBEAR_PORT"
+dropbear_acl="/etc/dropbear/authorized_keys"
+dropbear_rsa_key="/etc/dropbear/ssh_host_rsa_key"
+dropbear_ecdsa_key="/etc/dropbear/ssh_host_ecdsa_key"
+DBCONF
+DROPBEAREOF
+    fi
+
+    ## Rebuild the ZBM images with the additions, and put the network args on
+    ## the ZBM kernel commandline (both bootloader flavors, both entries).
+    if { [ "$ENCRYPTION" = "on" ] && [ -n "$ZBM_KEYFETCH_URL" ]; } || [ "$ZBM_DROPBEAR" = "on" ]; then
+        cat >> "$MOUNTPOINT"/tmp/install_zbm.sh <<REGENEOF
+
+## --- Rebuild ZBM with the encryption add-ons ---
+## (Networking args ride inside the image via /etc/cmdline.d - no bootloader
+## edits needed for them.) Fail LOUDLY: install_zbm.sh has no set -e, and a
+## failed regen would leave the first-pass images (no keyfetch/dropbear) on
+## the ESP - a boot-to-prompt trap.
+generate-zbm --debug || { echo "FATAL: ZBM regen with encryption add-ons failed"; exit 1; }
+REGENEOF
+    fi
 
     chroot "$MOUNTPOINT" /bin/bash -x /tmp/install_zbm.sh
 
@@ -773,7 +1061,12 @@ unmount_all() {
     mount --make-rslave "$MOUNTPOINT"/proc 2>/dev/null || true
     mount --make-rslave "$MOUNTPOINT"/sys  2>/dev/null || true
     grep "$MOUNTPOINT" /proc/mounts | cut -f2 -d" " | sort -r | xargs umount -n 2>/dev/null || true
-    zpool export "$POOL_NAME" 2>/dev/null || true
+    umount -R "$MOUNTPOINT" 2>/dev/null || true
+    ## A failed export is not fatal (same-hostid force-import handles the next
+    ## boot) but must be VISIBLE: a silently-imported leftover pool broke rerun
+    ## cleanup badly enough to require a live-env reboot.
+    zpool export "$POOL_NAME" \
+        || echo "WARNING: could not export $POOL_NAME (busy) - a rerun of this installer needs a rebooted live environment"
 }
 
 ##============================================================================
@@ -856,6 +1149,7 @@ main_initial() {
 
     configure_system_base
     install_zfs_packages
+    setup_encryption_target
     setup_boot_partition
     install_keyboard_chroot
     install_zfsbootmenu

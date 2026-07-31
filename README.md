@@ -16,11 +16,17 @@ If unattended automation is no requirement then it is probably easier to use Sit
 - Optional **root mirror** (`zfs-mirror.sh`) with two fixes that make a degraded pool boot unattended on a single surviving disk (consistent hostid + `nofail` ESP mount)
 - ESP-sync hook keeps the mirror's EFI partition current after kernel/ZBM updates
 - Optional bounded root + reserved partition (e.g. for a later ZFS `special` vdev)
+- Optional **native ZFS encryption** (aes-256-gcm) with **unattended remote unlock**:
+  the ZFSBootMenu initramfs brings up static networking (VLANs supported, unicast
+  only) and fetches the pool key over HTTP(S) from a key server you control; the
+  target initramfs carries the key *inside the encrypted root*, so the key never
+  touches plaintext storage. Falls back to a console prompt if the fetch fails
+- Optional **dropbear ssh in the ZBM initramfs** (pubkey-only) to remotely rescue a
+  stuck boot - diagnose, or paste the key by hand (`zfs load-key -L file:///tmp/key`)
 - Headless **QEMU test harness** that exercises install -> mirror -> dead-disk boot
 
 ## Future plans
 
-- At-rest encryption with remote unlock at boot
 - Debian support
 
 ## Requirements

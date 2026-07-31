@@ -160,10 +160,46 @@ ROOT_SIZE="0"                  # 0 = root takes the whole disk. If set (e.g. 600
 ASHIFT="12"                    # ZFS pool ashift (default 12 = 4K)
 NETPLAN_FILE="configs/foo.yaml" # if set, this netplan YAML is installed verbatim; else DHCP autoconfig
 MIRRORDISKID="ata-..."         # mirror disk for zfs-mirror.sh (optional)
+# --- optional, native ZFS encryption (see configs/host.conf.sample for the full model) ---
+ENCRYPTION="on"                # aes-256-gcm on the pool root; default off
+KEYFILE="myhost.key"           # raw 32 bytes, install-time; keep with PRIVATE configs, never in this repo
+ZBM_KEYFETCH_URL="https://10.0.0.2:8443/keys/myhost.key" # ZBM fetches at boot (IP-literal; no DNS in initramfs)
+ZBM_KEYFETCH_CA="ca.pem"       # pin the key server's self-signed cert (optional)
+ZBM_NET_ARGS="rd.neednet=1 ip=...:vlan40:none vlan=vlan40:eth0" # dracut net for the ZBM initramfs
+ZBM_DROPBEAR="on"              # dropbear ssh in ZBM for remote rescue (default off; port 222)
 ```
 
 Layout with `ROOT_SIZE` set (bounded-root shape): `p1` ESP, `p2` zroot (ROOT_SIZE), `p3` reserved (rest).
 Without it: `p1` ESP, `p2` zroot (whole disk). Swap, if any, is a partition between ESP and root.
+
+### Encryption model (ENCRYPTION=on)
+
+- Pool root is the encryptionroot (`keyformat=raw`, key = KEYFILE). `keylocation` points at
+  `/etc/zfs/<pool>.key`, a path valid in the live env at create time AND inside the encrypted
+  root afterwards (`setup_encryption_target`). An initramfs-tools hook embeds the key in the
+  TARGET initrd - which itself lives on the encrypted root (ZBM reads it post-unlock), so the
+  key never touches plaintext storage and the kexec'd system boots without prompting.
+- The ZBM image unlocks the pool via a **`load-key.d` hook** (`hooks/load-key.d/keyfetch.sh`,
+  written directly into the target by the installer - deliberately NOT via the nested chroot
+  script, to avoid multi-level heredoc escaping): retry-loop `curl` of ZBM_KEYFETCH_URL, then
+  `zfs load-key -L`. ⚠️ load-key.d is the ONLY correct stage: it runs immediately before every
+  unlock attempt, countdown included - `setup.d` hooks are SKIPPED when the zbm.timeout
+  countdown expires, so a keyfetch there never runs unattended (validated the hard way).
+  Networking rides INSIDE the image via `/etc/cmdline.d/dracut-network.conf`
+  (`install_optional_items`) - ZBM_NET_ARGS never touches the bootloader entries; only
+  CMDLINE_EXTRA (kernel-proper params like console=) is patched into those.
+- Dropbear (`ZBM_DROPBEAR=on`) uses the dracut-crypt-ssh module per the upstream ZBM
+  remote-access docs: host keys are **OpenSSH PEM** (`ssh-keygen -m PEM`, converted by the
+  module via dropbearconvert - dropbearkey-native keys break that), `cryptsetup` must be
+  installed (the module depends on dracut's `crypt` module), and the LUKS console/unlock
+  helper lines are stripped from module-setup.sh (compiled binaries we don't build). Host
+  keys are generated once into `/etc/dropbear/` so rebuilt images keep a stable ssh identity.
+  Rescue flow (validated in the harness): ssh -p 222 root@box -> push key ->
+  `zfs load-key -L file:///tmp/k <pool>` -> run `zbm` -> select BE -> boots.
+- Rerun/reuse safety: cleanup labelclears BOTH the target disk AND MIRRORDISKID (a stale pool
+  label on a reused second disk fails the target initramfs with "more than one matching
+  pool"), dies loudly if a leftover pool stays imported (reboot the live env then), and the
+  final export warns visibly on failure.
 
 ## Install flow
 

@@ -55,3 +55,31 @@ ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root
 ## --- Optional: root mirror (for zfs-mirror.sh) -------------------------------
 ## The /dev/disk/by-id/ name of the second disk to attach as a root mirror.
 #MIRRORDISKID="nvme-Samsung_SSD_980_PRO_1TB_S5YYYY"
+
+## --- Optional: native ZFS encryption ------------------------------------------
+## ENCRYPTION=on encrypts the pool root (aes-256-gcm, keyformat raw) - every
+## dataset inherits it. The model:
+##   - KEYFILE (raw 32 bytes, generate: head -c 32 /dev/urandom > myhost.key) is
+##     used at install time and stored at /etc/zfs/<pool>.key INSIDE the
+##     encrypted root; the target initramfs embeds it (and itself lives on the
+##     encrypted root), so the key never touches plaintext storage.
+##   - At boot, ZFSBootMenu unlocks the pool: unattended via ZBM_KEYFETCH_URL
+##     (a plain unicast GET from the ZBM initramfs - use an IP-literal URL, there
+##     is no DNS in the initramfs), or interactively at the console prompt.
+##   - ZBM_NET_ARGS are dracut args baked onto the ZBM kernel commandline; they
+##     configure static networking (incl. VLANs) inside the ZBM initramfs.
+##     Required for ZBM_KEYFETCH_URL and ZBM_DROPBEAR.
+##   - ZBM_DROPBEAR=on adds pubkey-only dropbear ssh to the ZBM image for remote
+##     rescue of a stuck boot (diagnose, or paste a key manually:
+##     zfs load-key -L file:///tmp/key <pool>). Gate the port in your upstream
+##     firewall; open it only when needed.
+## Keep KEYFILE with your private host configs - NEVER in this repo.
+#ENCRYPTION="on"
+#KEYFILE="myhost.key"
+#ZBM_KEYFETCH_URL="https://10.0.0.2:8443/keys/myhost.key"
+#ZBM_KEYFETCH_CA="myhost-keyserver-ca.pem"   # pin the key server's self-signed cert
+#ZBM_NET_ARGS="rd.neednet=1 ip=10.0.0.10::10.0.0.1:255.255.255.0::vlan40:none vlan=vlan40:eth0"
+#ZBM_DROPBEAR="on"
+#ZBM_DROPBEAR_KEYS="myhost.authorized_keys"  # defaults to AUTHORIZED_KEYS
+#ZBM_DROPBEAR_PORT="222"
+#CMDLINE_EXTRA="console=tty0 console=ttyS0"  # serial-console visibility, iommu=pt, etc.
