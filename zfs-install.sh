@@ -14,6 +14,12 @@
 
 set -euo pipefail
 
+# Truly non-interactive, also with NO TTY (ansible async, cron): without these, the
+# first debconf-using apt install pops whiptail, which dies with "Failed to open
+# terminal" when run headless. Inherited by debootstrap and the chrooted phases.
+export DEBIAN_FRONTEND=noninteractive
+export DEBCONF_NONINTERACTIVE_SEEN=true
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOUNTPOINT="/mnt/zfs_install"
 UBUNTU_ARCHIVE="http://archive.ubuntu.com/ubuntu"
