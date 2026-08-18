@@ -32,10 +32,12 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 print_usage() {
     cat <<'USAGE'
-Usage: sudo ./zfs-mirror.sh <config_file> -d|-r
+Usage: sudo ./zfs-mirror.sh <config_file> -d|-r [-f]
 
   -d  Dry run (validate and show what would be done)
   -r  Run (actually perform the mirror setup)
+  -f  Force: wipe the mirror disk first if it has partitions (reused
+      hardware / rebuilds). Without -f a non-empty mirror disk aborts.
 
 Adds a mirror disk to an existing ZFS root pool.
 
@@ -105,13 +107,20 @@ validate() {
         die "Pool $POOL_NAME is already mirrored"
     fi
 
-    # Verify mirror disk has no partitions (safety check)
+    # Verify mirror disk has no partitions (safety check; -f wipes instead of dying —
+    # the config file DECLARES this disk as the root mirror, so on a rebuild of reused
+    # hardware the wipe is stated intent)
     local mirror_dev
     mirror_dev=$(readlink -f "$mirror")
     local part_count
     part_count=$(lsblk -n -o NAME "$mirror_dev" | wc -l)
     if [ "$part_count" -gt 1 ]; then
-        die "Mirror disk $mirror_dev already has partitions. Wipe it first if you're sure: wipefs -a $mirror_dev"
+        if [ -n "${FORCE_WIPE:-}" ]; then
+            echo "Mirror disk $mirror_dev has partitions — wiping (-f given)"
+            run wipefs -a "$mirror_dev"
+        else
+            die "Mirror disk $mirror_dev already has partitions. Wipe it first if you're sure: wipefs -a $mirror_dev (or rerun with -f)"
+        fi
     fi
 
     # Verify primary has expected partition layout
@@ -380,6 +389,12 @@ main() {
     case "$mode" in
         -d) DRYRUN=1 ;;
         -r) DRYRUN="" ;;
+        *)  print_usage ;;
+    esac
+
+    case "${3:-}" in
+        -f) FORCE_WIPE=1 ;;
+        "") FORCE_WIPE="" ;;
         *)  print_usage ;;
     esac
 
