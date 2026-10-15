@@ -10,7 +10,8 @@ If unattended automation is no requirement then it is probably easier to use Sit
 
 ## Features
 
-- Ubuntu root-on-ZFS with ZFSBootMenu
+- Ubuntu root-on-ZFS with ZFSBootMenu; tested with 24.04 (noble) and 26.04 (resolute) targets
+- Optional **GNU userland** on Ubuntu >= 25.10: GNU coreutils + classic sudo instead of uutils/sudo-rs
 - **UEFI (rEFInd)** and **BIOS (syslinux)** boot modes
 - Fully **config-driven**, no interactive prompts; ideal for automation
 - Optional **root mirror** (`zfs-mirror.sh`) with two fixes that make a degraded pool boot unattended on a single surviving disk (consistent hostid + `nofail` ESP mount)

@@ -204,6 +204,7 @@ POOL_NAME="zroot"              # default: zroot
 COMPRESSION="lz4"              # default: lz4
 UBUNTU_VER="noble"             # default: noble
 DISTRO="server"                # server or kubuntu
+GNU_USERLAND="off"             # on = GNU coreutils + classic sudo instead of uutils/sudo-rs (Ubuntu >= 25.10)
 SWAP_SIZE="0"                  # MB, 0 = no swap
 BOOT_MODE="uefi"               # uefi or bios (default: uefi)
 # --- optional, for production / bounded-root layouts ---
@@ -257,6 +258,12 @@ Without it: `p1` ESP, `p2` zroot (whole disk). Swap, if any, is a partition betw
   final export warns visibly on failure.
 
 ## Install flow
+
+`initial` re-execs itself in a private mount namespace (`unshare --mount --propagation private`),
+so the pool and chroot bind mounts are invisible to every other namespace (systemd-sandboxed
+services, snap namespaces) and vanish when the installer exits, even on `die`. Without it a run
+that died on the Ubuntu live desktop left the pool busy and unexportable until a reboot. To look
+inside a running install: `nsenter -t <installer pid> -m ls /mnt/zfs_install`.
 
 1. `initial` action (from live USB/ISO):
    - Partitions disk, creates ZFS pool+datasets

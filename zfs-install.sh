@@ -65,6 +65,9 @@ Config file variables:
     COMPRESSION   - ZFS compression (default: lz4)
     UBUNTU_VER    - Ubuntu version codename (default: noble)
     DISTRO        - "server" or "kubuntu" (default: server)
+    GNU_USERLAND  - "on" = GNU coreutils + classic sudo instead of the Rust
+                    defaults (uutils, sudo-rs) of Ubuntu >= 25.10; no-op on
+                    older releases (default: off)
     SWAP_SIZE     - Swap partition size in MB (default: 0 = no swap)
     BOOT_MODE     - "uefi" or "bios" (default: uefi)
     BOOT_SIZE     - ESP/boot partition size (sgdisk syntax, default: 512M)
@@ -132,6 +135,7 @@ load_config() {
     BOOT_MODE="${BOOT_MODE:-uefi}"
     SWAP_SIZE="${SWAP_SIZE:-0}"
     DISTRO="${DISTRO:-server}"
+    GNU_USERLAND="${GNU_USERLAND:-off}" ## on = GNU coreutils + classic sudo (Ubuntu >= 25.10 defaults to Rust ones)
     BOOT_SIZE="${BOOT_SIZE:-512M}"
     ROOT_SIZE="${ROOT_SIZE:-0}"       ## 0 = root takes the whole disk; else bounded root + a reserved partition (rest) for a later vdev (e.g. ZFS special)
     ASHIFT="${ASHIFT:-12}"
@@ -193,6 +197,11 @@ load_config() {
         *) die "DISTRO must be 'server' or 'kubuntu', got: $DISTRO" ;;
     esac
 
+    case "$GNU_USERLAND" in
+        on|off) ;;
+        *) die "GNU_USERLAND must be 'on' or 'off', got: $GNU_USERLAND" ;;
+    esac
+
     log "Configuration"
     echo "  Disk:        $DISKID"
     echo "  Hostname:    $HOSTNAME"
@@ -202,6 +211,7 @@ load_config() {
     echo "  Compression: $COMPRESSION"
     echo "  Ubuntu:      $UBUNTU_VER"
     echo "  Distro:      $DISTRO"
+    echo "  GNU tools:   $GNU_USERLAND"
     echo "  Swap:        ${SWAP_SIZE}MB (0 = none)"
     echo "  Boot mode:   $BOOT_MODE"
     echo "  Boot/ESP:    $BOOT_SIZE"
@@ -571,12 +581,19 @@ configure_system_base() {
         local iface
         iface="$(basename "$(find /sys/class/net -maxdepth 1 -mindepth 1 -name "e*" | head -1)")"
         echo "  Ethernet interface: $iface (DHCP)"
+        ## dhcp-identifier: mac - networkd's default client-id is a DUID derived
+        ## from /etc/machine-id, which is new on every install. The DHCP server
+        ## then sees a different client than the live env (NetworkManager, MAC
+        ## client-id) or the previous install, and refuses to hand out a MAC
+        ## reservation still leased to "them" (kea ADDRESS_CONFLICT -> pool
+        ## address until the old lease expires; first tbook install).
         cat > "$MOUNTPOINT"/etc/netplan/01-netplan.yaml <<EOF
 network:
   version: 2
   ethernets:
     $iface:
       dhcp4: yes
+      dhcp-identifier: mac
 EOF
     fi
     chmod 600 "$MOUNTPOINT"/etc/netplan/01-netplan.yaml
@@ -606,6 +623,37 @@ locale-gen en_US.UTF-8 $LOCALE
 echo 'LANG="$LOCALE"' > /etc/default/locale
 ln -fs /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 dpkg-reconfigure tzdata
+EOCHROOT
+}
+
+## Ubuntu >= 25.10 ships Rust coreutils (uutils) and sudo-rs by default. With
+## GNU_USERLAND=on, switch to GNU coreutils + classic sudo right after debootstrap,
+## BEFORE the kernel/initramfs packages run (update-initramfs has known failures
+## under uutils). Mechanism per Ubuntu Foundations ("Migration to rust-coreutils
+## in 25.10"): 'coreutils' is an empty meta that pre-depends on coreutils-from-
+## uutils | coreutils-from-gnu; apt swaps the providers (the post's dpkg -i
+## route is refused on 26.04: the providers Conflict). A negative pin keeps
+## upgrades from swapping back. sudo-rs cannot be removed (ubuntu-minimal depends
+## on both sudo and sudo-rs), so classic sudo is selected via update-alternatives.
+## No-op on releases without the coreutils-from-* split (e.g. noble).
+setup_gnu_userland() {
+    [ "$GNU_USERLAND" = "on" ] || return 0
+    log "Selecting GNU userland (coreutils + classic sudo)"
+    chroot "$MOUNTPOINT" /bin/bash -x <<'EOCHROOT' || die "GNU_USERLAND setup failed"
+if dpkg -s coreutils-from-uutils >/dev/null 2>&1; then
+    apt-get install -y coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
+    dpkg -s coreutils-from-gnu >/dev/null 2>&1 || { echo "ERROR: GNU coreutils swap failed" >&2; exit 1; }
+fi
+if apt-cache show coreutils-from-uutils >/dev/null 2>&1; then
+    printf 'Package: coreutils-from-uutils\nPin: release a=*\nPin-Priority: -10\n' \
+        > /etc/apt/preferences.d/no-uutils
+fi
+if dpkg -s sudo-rs >/dev/null 2>&1; then
+    apt-get install -y sudo
+    update-alternatives --set sudo /usr/bin/sudo.ws \
+        || echo "WARNING: could not select classic sudo; check: update-alternatives --display sudo" >&2
+fi
+true
 EOCHROOT
 }
 
@@ -731,7 +779,9 @@ apt-get install --yes --no-install-recommends \
     make \
     kexec-tools \
     dracut-core \
+    util-linux-extra \
     cpio
+## util-linux-extra: ships switch_root since 26.04 (was util-linux); dracut needs it
 apt-get install --yes curl
 
 ## Clone and build ZFSBootMenu
@@ -758,7 +808,11 @@ if [ "$BOOT_MODE" = "bios" ]; then
 fi
 
 update-initramfs -c -k all
-generate-zbm --debug
+## generate-zbm does NOT fail when dracut does - it copies the half-built image to
+## the ESP anyway (first 26.04 install: missing switch_root). Check dracut's own
+## fatal marker instead.
+generate-zbm --debug 2>&1 | tee /tmp/generate-zbm.log
+if grep -q 'dracut\[F\]' /tmp/generate-zbm.log; then echo "FATAL: dracut failed building the ZBM image"; exit 1; fi
 
 ## BIOS: configure syslinux
 if [ "$BOOT_MODE" = "bios" ]; then
@@ -962,7 +1016,9 @@ DROPBEAREOF
 ## edits needed for them.) Fail LOUDLY: install_zbm.sh has no set -e, and a
 ## failed regen would leave the first-pass images (no keyfetch/dropbear) on
 ## the ESP - a boot-to-prompt trap.
-generate-zbm --debug || { echo "FATAL: ZBM regen with encryption add-ons failed"; exit 1; }
+generate-zbm --debug 2>&1 | tee /tmp/generate-zbm-regen.log
+[ "\${PIPESTATUS[0]}" -eq 0 ] || { echo "FATAL: ZBM regen with encryption add-ons failed"; exit 1; }
+if grep -q 'dracut\[F\]' /tmp/generate-zbm-regen.log; then echo "FATAL: dracut failed in the ZBM regen"; exit 1; fi
 
 ## BIOS: the regen ROTATES/PRUNES the image names the main body symlinked
 ## (vmlinuz-bootmenu -> vmlinuz.old-bootmenu etc.), and syslinux loads FIXED
@@ -1010,9 +1066,12 @@ finalize_system() {
 ## Root password
 echo "root:$USERPASS" | chpasswd -c SHA256
 
-## tmpfs on /tmp
-cp /usr/share/systemd/tmp.mount /etc/systemd/system/
-systemctl enable tmp.mount
+## tmpfs on /tmp (26.04 already does this by default and no longer ships the
+## unit in /usr/share/systemd)
+if [ -e /usr/share/systemd/tmp.mount ]; then
+    cp /usr/share/systemd/tmp.mount /etc/systemd/system/
+    systemctl enable tmp.mount
+fi
 
 ## Preserve boot messages on tty1 (don't clear screen at login)
 mkdir -p /etc/systemd/system/getty@tty1.service.d
@@ -1148,14 +1207,27 @@ install_distro() {
         local iface
         iface="$(basename "$(find /sys/class/net -maxdepth 1 -mindepth 1 -name "${ethprefix}*" | head -1)")"
         rm -f /etc/netplan/01-netplan.yaml
-        cat > /etc/netplan/01-network-manager-all.yaml <<EOF
-network:
-  version: 2
-  renderer: NetworkManager
-EOF
-        systemctl stop systemd-networkd 2>/dev/null || true
-        systemctl disable systemd-networkd 2>/dev/null || true
-        netplan apply
+        ## Name the ethernet explicitly: netplan then writes a NetworkManager
+        ## profile for it (with the MAC client-id, see configure_system_base)
+        ## instead of leaving it to NM's auto-created "Wired connection 1".
+        {
+            printf 'network:\n  version: 2\n  renderer: NetworkManager\n'
+            if [ -n "$iface" ]; then
+                printf '  ethernets:\n    %s:\n      dhcp4: yes\n      dhcp-identifier: mac\n' "$iface"
+            fi
+        } > /etc/netplan/01-network-manager-all.yaml
+        chmod 600 /etc/netplan/01-network-manager-all.yaml
+        ## The switch runs as a transient unit, detached from this (ssh) session:
+        ## the network blips while networkd hands over to NM, and a dropped ssh
+        ## would SIGHUP a foreground postreboot halfway. NM must be RESTARTED
+        ## after netplan apply - it only reads netplan's /run/NetworkManager/
+        ## conf.d/10-globally-managed-devices.conf (which lets it manage
+        ## ethernet) at startup; without that the box went offline with the
+        ## ethernet "unmanaged" by both (first 26.04 kubuntu install).
+        ## The socket too: a stopped networkd is otherwise socket-activated again.
+        systemd-run --unit=zfs-install-nm-switch --collect --no-block \
+            sh -c 'systemctl disable --now systemd-networkd.socket systemd-networkd.service; netplan apply; systemctl restart NetworkManager'
+        echo "  Network switch to NetworkManager running detached (journalctl -u zfs-install-nm-switch); a brief network drop is expected"
     fi
 }
 
@@ -1169,7 +1241,6 @@ apt install -yq \
     parted \
     cifs-utils \
     man-db \
-    tldr \
     locate
 EOCHROOT
 }
@@ -1200,6 +1271,7 @@ main_initial() {
     run_debootstrap
 
     configure_system_base
+    setup_gnu_userland
     install_zfs_packages
     setup_encryption_target
     setup_boot_partition
@@ -1249,6 +1321,22 @@ CONFIG_FILE="${1:-}"
 ACTION="${2:-}"
 [ -n "$CONFIG_FILE" ] && [ -n "$ACTION" ] || print_usage
 [ "$(id -u)" -eq 0 ] || die "Must be run as root"
+
+## initial: re-exec in a PRIVATE mount namespace. Every service that runs in a
+## mount namespace of its own (systemd sandboxing: udevd, logind, resolved,
+## NetworkManager...; snapd's preserved snap namespaces) otherwise gets copies of
+## the pool + rbind mounts. A run that dies mid-install then leaves the pool
+## "busy" with no visible holder, unexportable until a live-env reboot (first
+## 26.04 run on the Ubuntu live desktop: 22 holders, still busy after clearing
+## every one). In a private namespace nobody else sees the mounts, nothing
+## propagates back to the host (no /dev/pts rip-out), and the kernel drops all
+## of them when this process exits - die included. Inspect a running install
+## from outside with: nsenter -t <installer pid> -m
+if [ "$ACTION" = "initial" ] && [ -z "${ZFS_INSTALL_UNSHARED:-}" ]; then
+    command -v unshare >/dev/null || die "unshare (util-linux) not found"
+    export ZFS_INSTALL_UNSHARED=1
+    exec unshare --mount --propagation private -- "$0" "$@"
+fi
 load_config "$CONFIG_FILE"
 
 case "$ACTION" in

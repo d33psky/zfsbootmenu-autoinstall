@@ -52,6 +52,12 @@ ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root
 ## available profiles. Unset = enable all features the running ZFS supports.
 #POOL_COMPATIBILITY="openzfs-2.2-linux"
 
+## --- Optional: GNU userland ---------------------------------------------------
+## Ubuntu >= 25.10 defaults to Rust coreutils (uutils) and sudo-rs. "on" switches
+## the target to GNU coreutils (pinned against swapping back) and classic sudo
+## (via update-alternatives) right after debootstrap. No-op on older releases.
+#GNU_USERLAND="on"
+
 ## --- Optional: root mirror (for zfs-mirror.sh) -------------------------------
 ## The /dev/disk/by-id/ name of the second disk to attach as a root mirror.
 #MIRRORDISKID="nvme-Samsung_SSD_980_PRO_1TB_S5YYYY"
