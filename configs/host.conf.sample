@@ -63,15 +63,20 @@ ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root
 #MIRRORDISKID="nvme-Samsung_SSD_980_PRO_1TB_S5YYYY"
 
 ## --- Optional: native ZFS encryption ------------------------------------------
-## ENCRYPTION=on encrypts the pool root (aes-256-gcm, keyformat raw) - every
+## ENCRYPTION=on encrypts the pool root (aes-256-gcm, KEYFORMAT) - every
 ## dataset inherits it. The model:
-##   - KEYFILE (raw 32 bytes, generate: head -c 32 /dev/urandom > myhost.key) is
-##     used at install time and stored at /etc/zfs/<pool>.key INSIDE the
-##     encrypted root; the target initramfs embeds it (and itself lives on the
-##     encrypted root), so the key never touches plaintext storage.
-##   - At boot, ZFSBootMenu unlocks the pool: unattended via ZBM_KEYFETCH_URL
-##     (a plain unicast GET from the ZBM initramfs - use an IP-literal URL, there
-##     is no DNS in the initramfs), or interactively at the console prompt.
+##   - KEYFILE is used at install time and stored at /etc/zfs/<pool>.key INSIDE
+##     the encrypted root; the target initramfs embeds it (and itself lives on
+##     the encrypted root), so the key never touches plaintext storage.
+##   - KEYFORMAT="raw" (default, servers): KEYFILE is 32 random bytes
+##     (head -c 32 /dev/urandom > myhost.key). It can NOT be typed: ZBM unlocks
+##     unattended via ZBM_KEYFETCH_URL (a plain unicast GET from the ZBM
+##     initramfs - use an IP-literal URL, there is no DNS in the initramfs), else
+##     only by pushing the key over ZBM_DROPBEAR.
+##   - KEYFORMAT="passphrase" (laptops/desktops): KEYFILE holds the passphrase,
+##     one line of 8-512 chars: (umask 077; printf '%s\n' 'my passphrase' > myhost.key)
+##     ZBM prompts for it on the console at every boot; the kexec'd OS reads the
+##     embedded file, so you type it once. Prefer ASCII (ZBM's keymap may differ).
 ##   - ZBM_NET_ARGS are dracut args baked onto the ZBM kernel commandline; they
 ##     configure static networking (incl. VLANs) inside the ZBM initramfs.
 ##     Required for ZBM_KEYFETCH_URL and ZBM_DROPBEAR.
@@ -81,6 +86,7 @@ ROOT_SIZE="0"          # 0 = root takes the whole disk. If set (e.g. 600G), root
 ##     firewall; open it only when needed.
 ## Keep KEYFILE with your private host configs - NEVER in this repo.
 #ENCRYPTION="on"
+#KEYFORMAT="raw"                             # or "passphrase"
 #KEYFILE="myhost.key"
 #ZBM_KEYFETCH_URL="https://10.0.0.2:8443/keys/myhost.key"
 #ZBM_KEYFETCH_CA="myhost-keyserver-ca.pem"   # pin the key server's self-signed cert

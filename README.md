@@ -21,7 +21,10 @@ If unattended automation is no requirement then it is probably easier to use Sit
   the ZFSBootMenu initramfs brings up static networking (VLANs supported, unicast
   only) and fetches the pool key over HTTP(S) from a key server you control; the
   target initramfs carries the key *inside the encrypted root*, so the key never
-  touches plaintext storage. Falls back to a console prompt if the fetch fails
+  touches plaintext storage. Raw 32-byte keys (`KEYFORMAT=raw`, the default) can't be
+  typed, so if the fetch fails the way in is dropbear (below)
+- Or **passphrase encryption** (`KEYFORMAT=passphrase`) for laptops/desktops: ZFSBootMenu
+  asks for the passphrase on the console once per boot; the OS boots without asking again
 - Optional **dropbear ssh in the ZBM initramfs** (pubkey-only) to remotely rescue a
   stuck boot - diagnose, or paste the key by hand (`zfs load-key -L file:///tmp/key`)
 - Headless **QEMU test harness** that exercises install -> mirror -> dead-disk boot

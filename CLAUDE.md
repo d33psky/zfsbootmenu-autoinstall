@@ -12,7 +12,10 @@ Standalone ZFS root installation script with ZFSBootMenu. Supports UEFI (rEFInd)
 - `examples/` - `user-data.sample.yaml` for the headless harness (copy to `test/user-data`, add your SSH pubkey)
 - `test-uefi-headless.sh` - **Fully headless** harness: cloud-init-seeded Ubuntu cloud image as the live env, driven entirely over SSH (no GUI). Preferred for automated testing
 - `test-uefi-qemu.sh` - UEFI (OVMF) harness with two serial'd disks (interactive live-ISO install)
-- `test-bios-qemu.sh` - BIOS (syslinux) harness
+- `test-bios-qemu.sh` - BIOS (syslinux) harness (interactive live ISO, GTK)
+- `test-bios-headless.sh` - **Headless BIOS** harness (SeaBIOS): cloud image as live env, one target
+  `virtio-bios0`, serial on a UNIX socket you can TYPE into (ZBM passphrase prompt), HMP monitor socket
+  for screendumps. Pairs with `configs/qemu-bios-enc-test.conf` (see "Headless BIOS passphrase testing")
 - `test/` - QEMU scratch, **gitignored** (disks, OVMF NVRAM, seed.iso, cloud image, serial logs)
 
 ## QEMU Testing
@@ -192,6 +195,33 @@ keyfetch retry window dropbear may be slow to answer - wait it out (~2 min). Boo
 `live` mode after an install lands in rEFInd/ZBM instead of the cloud image (the
 install's NVRAM boot entry wins); `prep` resets the NVRAM.
 
+### Headless BIOS passphrase testing (test-bios-headless.sh)
+
+Exercises legacy boot (SeaBIOS -> GPT gptmbr -> syslinux -> ZBM -> kexec) with
+`KEYFORMAT=passphrase`, a swap partition and a capped ARC (`configs/qemu-bios-enc-test.conf`:
+resolute, GNU_USERLAND, 4G RAM / 64G sparse disk). Validated 2026-11-03.
+```bash
+(umask 077; printf '%s\n' 'qemu test passphrase' > test/qemu-pass.key)
+./test-bios-headless.sh create && ./test-bios-headless.sh prep
+./test-bios-headless.sh live &          # ssh -p 2222 <user-data user>@localhost, wait: cloud-init status --wait
+#   copy zfs-install.sh, configs/qemu-bios-enc-test.conf, test/qemu-pass.key in (same relative layout)
+#   sudo bash zfs-install.sh configs/qemu-bios-enc-test.conf initial ; sudo poweroff
+./test-bios-headless.sh installed &
+#   wait for "Enter passphrase for 'zroot':" in test/serial-bios-installed.log, then type it:
+printf 'qemu test passphrase\r' | socat -t1 - UNIX-CONNECT:test/serial-bios.sock
+#   expect ONE prompt, then login: ; sshpass -p test ssh -p 2222 test@localhost
+#   check: zfs get keyformat,keystatus zroot ; cat /sys/module/zfs/parameters/zfs_arc_max
+```
+**Keyboard + VGA path** (what a real laptop uses - no serial): put `console=ttyS0 console=tty0`
+(tty0 LAST) in `/boot/syslinux/syslinux.cfg`, reboot, screendump to see the prompt on VGA, and type
+through the emulated PS/2 keyboard with HMP `sendkey` (one per char, `spc` for space, `ret` at the end).
+Validated 2026-11-03: a wrong passphrase gives "Key load error: Incorrect key provided" and ZBM
+prompts again; the right one boots to the tty1 login.
+
+Gotchas: SeaBIOS skips plain `if=virtio` disks here (CD -> iPXE -> "No bootable device"), so the
+harness sets `bootindex=0` on the boot disk. Silent serial at the firmware stage: screendump via
+`echo 'screendump test/console.ppm' | socat - UNIX-CONNECT:test/monitor-bios.sock`.
+
 ## Config file format
 
 ```bash
@@ -218,7 +248,8 @@ NETPLAN_FILE="configs/foo.yaml" # if set, this netplan YAML is installed verbati
 MIRRORDISKID="ata-..."         # mirror disk for zfs-mirror.sh (optional)
 # --- optional, native ZFS encryption (see configs/host.conf.sample for the full model) ---
 ENCRYPTION="on"                # aes-256-gcm on the pool root; default off
-KEYFILE="myhost.key"           # raw 32 bytes, install-time; keep with PRIVATE configs, never in this repo
+KEYFORMAT="raw"                # raw (default; fetch/dropbear unlock) or passphrase (typed at ZBM every boot)
+KEYFILE="myhost.key"           # raw: 32 bytes / passphrase: one line 8-512 chars; install-time; keep with PRIVATE configs, never in this repo
 ZBM_KEYFETCH_URL="https://10.0.0.2:8443/keys/myhost.key" # ZBM fetches at boot (IP-literal; no DNS in initramfs)
 ZBM_KEYFETCH_CA="ca.pem"       # pin the key server's self-signed cert (optional)
 ZBM_NET_ARGS="rd.neednet=1 ip=...:vlan40:none vlan=vlan40:eth0" # dracut net for the ZBM initramfs
@@ -230,7 +261,11 @@ Without it: `p1` ESP, `p2` zroot (whole disk). Swap, if any, is a partition betw
 
 ### Encryption model (ENCRYPTION=on)
 
-- Pool root is the encryptionroot (`keyformat=raw`, key = KEYFILE). `keylocation` points at
+- `KEYFORMAT=passphrase`: same flow, KEYFILE holds the passphrase text. ZBM can't read
+  `/etc/zfs/<pool>.key` before unlock, so it prompts on the console; the target initrd
+  carries the file, so the passphrase is typed once per boot. A raw key can't be typed,
+  so raw without ZBM_KEYFETCH_URL only unlocks via dropbear (the installer warns).
+- Pool root is the encryptionroot (`keyformat=$KEYFORMAT`, key = KEYFILE). `keylocation` points at
   `/etc/zfs/<pool>.key`, a path valid in the live env at create time AND inside the encrypted
   root afterwards (`setup_encryption_target`). An initramfs-tools hook embeds the key in the
   TARGET initrd - which itself lives on the encrypted root (ZBM reads it post-unlock), so the

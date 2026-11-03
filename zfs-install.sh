@@ -84,15 +84,26 @@ Config file variables:
                     LATEST; Ubuntu noble ships 2.2). e.g. openzfs-2.2-linux
                     (default: unset = all features the running ZFS supports)
   Optional - native ZFS encryption (see configs/host.conf.sample for the full model):
-    ENCRYPTION    - "on" = encrypt the pool root (aes-256-gcm, keyformat raw).
+    ENCRYPTION    - "on" = encrypt the pool root (aes-256-gcm, KEYFORMAT below).
                     The key is embedded in the TARGET initramfs, which lives on
                     the encrypted root itself - it never touches plaintext disk.
                     ZFSBootMenu unlocks the pool at boot: via ZBM_KEYFETCH_URL
-                    (unattended) or an interactive prompt. (default: off)
-    KEYFILE       - Path to the raw 32-byte key used at install time. Generate:
-                    head -c 32 /dev/urandom > myhost.key   (never commit it)
+                    (unattended) or, with KEYFORMAT=passphrase, a console prompt.
+                    (default: off)
+    KEYFORMAT     - "raw" (default) or "passphrase".
+                    raw: KEYFILE is 32 random bytes - NOT typeable, so the box only
+                      unlocks via ZBM_KEYFETCH_URL or a key pushed over ZBM_DROPBEAR.
+                      For servers.
+                    passphrase: KEYFILE holds the passphrase (one line, 8-512 chars),
+                      typed ONCE per boot at the ZBM console prompt (the target
+                      initramfs carries the file, so the OS doesn't ask again).
+                      For laptops/desktops. Use ASCII: ZBM's keymap may not be yours.
+    KEYFILE       - Path to the key used at install time (never commit it).
+                    raw:        head -c 32 /dev/urandom > myhost.key
+                    passphrase: (umask 077; printf '%s\n' 'my passphrase' > myhost.key)
     ZBM_KEYFETCH_URL - URL the ZBM initramfs fetches the key from at boot
-                    (http:// or https://). Unset = ZBM prompts on console.
+                    (http:// or https://). Unset = ZBM prompts on the console
+                    (only usable with KEYFORMAT=passphrase).
     ZBM_KEYFETCH_CA - Path to a CA/cert PEM baked into the ZBM image and pinned
                     for the fetch (self-signed key server). Unset = system CAs.
     ZBM_NET_ARGS  - dracut network args for the ZBM initramfs, verbatim, e.g.
@@ -143,7 +154,8 @@ load_config() {
     AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-}" ## if set, this file's pubkeys go into ~USERNAME/.ssh/authorized_keys
     POOL_COMPATIBILITY="${POOL_COMPATIBILITY:-}" ## if set, zpool create -o compatibility=<this> (cap features for an older target ZFS)
     ENCRYPTION="${ENCRYPTION:-off}"   ## on = native ZFS encryption on the pool root
-    KEYFILE="${KEYFILE:-}"            ## raw 32-byte key used at install time (never committed)
+    KEYFORMAT="${KEYFORMAT:-raw}"     ## raw = 32 random bytes (servers); passphrase = typed at ZBM (laptops)
+    KEYFILE="${KEYFILE:-}"            ## key used at install time (never committed): 32 raw bytes, or the passphrase
     ZBM_KEYFETCH_URL="${ZBM_KEYFETCH_URL:-}" ## ZBM boot-time key fetch URL; unset = console prompt
     ZBM_KEYFETCH_CA="${ZBM_KEYFETCH_CA:-}"   ## pinned CA/cert PEM for the fetch (self-signed server)
     ZBM_NET_ARGS="${ZBM_NET_ARGS:-}"  ## dracut net args for the ZBM initramfs (ip=... vlan=... rd.neednet=1)
@@ -165,7 +177,19 @@ load_config() {
                 [ -n "$KEYFILE" ] || die "ENCRYPTION=on requires KEYFILE"
                 [ -f "$KEYFILE" ] || KEYFILE="$SCRIPT_DIR/$KEYFILE"
                 [ -f "$KEYFILE" ] || die "KEYFILE not found: $KEYFILE"
-                [ "$(stat -c%s "$KEYFILE")" -eq 32 ] || die "KEYFILE must be exactly 32 raw bytes (head -c 32 /dev/urandom > key)"
+                if [ "$KEYFORMAT" = "raw" ]; then
+                    [ "$(stat -c%s "$KEYFILE")" -eq 32 ] || die "KEYFILE must be exactly 32 raw bytes (head -c 32 /dev/urandom > key)"
+                else
+                    ## zfs reads ONE line from a passphrase keyfile and drops its
+                    ## newline; a second line would silently not be part of the
+                    ## passphrase you type at ZBM. 8..512 = zfs's own limits.
+                    local pp_lines pp_len
+                    pp_lines="$(wc -l < "$KEYFILE")"
+                    pp_len="$(head -n1 "$KEYFILE" | tr -d '\n' | wc -c)"
+                    [ "$pp_lines" -le 1 ] || die "KEYFILE (passphrase) must be a single line, has $pp_lines"
+                    [ "$pp_len" -ge 8 ] && [ "$pp_len" -le 512 ] \
+                        || die "KEYFILE (passphrase) must be 8..512 characters, is $pp_len"
+                fi
                 if [ -n "$ZBM_KEYFETCH_CA" ]; then
                     [ -f "$ZBM_KEYFETCH_CA" ] || ZBM_KEYFETCH_CA="$SCRIPT_DIR/$ZBM_KEYFETCH_CA"
                     [ -f "$ZBM_KEYFETCH_CA" ] || die "ZBM_KEYFETCH_CA not found: $ZBM_KEYFETCH_CA"
@@ -174,6 +198,19 @@ load_config() {
             if [ -n "$ZBM_KEYFETCH_URL" ] && [ -z "$ZBM_NET_ARGS" ]; then
                 die "ZBM_KEYFETCH_URL requires ZBM_NET_ARGS (the ZBM initramfs needs network to fetch the key)"
             fi
+            case "$KEYFORMAT" in
+                passphrase) ;;
+                raw)
+                    ## A raw key can't be typed at ZBM's prompt: without a fetch
+                    ## URL the only way in is pushing the key over dropbear.
+                    if [ -z "$ZBM_KEYFETCH_URL" ]; then
+                        echo "WARNING: KEYFORMAT=raw without ZBM_KEYFETCH_URL: the 32-byte key cannot be typed" >&2
+                        echo "  at the ZBM console. Unlock is only possible by pushing it over ZBM_DROPBEAR" >&2
+                        echo "  (ssh) or from a rescue system. Laptops/desktops want KEYFORMAT=passphrase." >&2
+                    fi
+                    ;;
+                *) die "KEYFORMAT must be 'raw' or 'passphrase', got: $KEYFORMAT" ;;
+            esac
             ;;
         off) ;;
         *) die "ENCRYPTION must be 'on' or 'off', got: $ENCRYPTION" ;;
@@ -221,8 +258,10 @@ load_config() {
     if [ -n "$AUTHORIZED_KEYS" ]; then echo "  SSH keys:    $AUTHORIZED_KEYS"; else echo "  SSH keys:    none (password-only)"; fi
     if [ -n "$POOL_COMPATIBILITY" ]; then echo "  Pool compat: $POOL_COMPATIBILITY"; else echo "  Pool compat: (all features of running ZFS)"; fi
     if [ "$ENCRYPTION" = "on" ]; then
-        echo "  Encryption:  on (aes-256-gcm, keyfile $KEYFILE)"
-        if [ -n "$ZBM_KEYFETCH_URL" ]; then echo "  ZBM unlock:  fetch $ZBM_KEYFETCH_URL${ZBM_KEYFETCH_CA:+ (pinned CA $ZBM_KEYFETCH_CA)}"; else echo "  ZBM unlock:  console prompt"; fi
+        echo "  Encryption:  on (aes-256-gcm, keyformat $KEYFORMAT, keyfile $KEYFILE)"
+        if [ -n "$ZBM_KEYFETCH_URL" ]; then echo "  ZBM unlock:  fetch $ZBM_KEYFETCH_URL${ZBM_KEYFETCH_CA:+ (pinned CA $ZBM_KEYFETCH_CA)}"
+        elif [ "$KEYFORMAT" = "passphrase" ]; then echo "  ZBM unlock:  passphrase at the console prompt"
+        else echo "  ZBM unlock:  NONE typeable (raw key; dropbear push / rescue only)"; fi
         [ -n "$ZBM_NET_ARGS" ] && echo "  ZBM net:     $ZBM_NET_ARGS"
     else
         echo "  Encryption:  off"
@@ -372,6 +411,27 @@ cleanup_target_disk() {
     done
     sleep 1
 
+    ## Device-mapper holders on the OLD partitions (an LVM install's VG that the
+    ## live env auto-activated; LUKS; md) keep them busy: the wipefs calls below
+    ## fail silently and the kernel can't re-read the new partition table (found
+    ## on real HW: an old Ubuntu LVM install, live desktop had ubuntu-vg active).
+    ## Deactivate LVM, then refuse to touch the disk while anything still holds it.
+    local part vg dev holders
+    if command -v pvs >/dev/null 2>&1; then
+        for part in /dev/disk/by-id/"$DISKID"-part*; do
+            [ -e "$part" ] || continue
+            ## || true: pvs exits 5 on a non-PV partition, fatal under pipefail
+            vg="$(pvs --noheadings -o vg_name "$part" 2>/dev/null | tr -d ' ' || true)"
+            if [ -n "$vg" ]; then
+                echo "  Deactivating LVM volume group '$vg' on $part"
+                vgchange -an "$vg" || true
+            fi
+        done
+    fi
+    dev="$(basename "$(readlink -f /dev/disk/by-id/"$DISKID")")"
+    holders="$(ls -d /sys/class/block/"$dev"/holders/* /sys/class/block/"$dev"/"$dev"*/holders/* 2>/dev/null || true)"
+    [ -z "$holders" ] || die "Target disk $dev is still held by device-mapper (LVM/LUKS/md): $(echo $holders | tr '\n' ' ')- deactivate and rerun"
+
     wipefs -a /dev/disk/by-id/"$DISKID" 2>/dev/null || true
     for part in /dev/disk/by-id/"$DISKID"-part*; do
         [ -e "$part" ] && wipefs -a "$part" 2>/dev/null || true
@@ -470,7 +530,7 @@ create_zfs_pool() {
         install -D -m 400 "$KEYFILE" /etc/zfs/"$POOL_NAME".key
         encryption_opts=(
             -O encryption=aes-256-gcm
-            -O keyformat=raw
+            -O keyformat="$KEYFORMAT"
             -O keylocation=file:///etc/zfs/"$POOL_NAME".key
         )
     fi
@@ -1335,7 +1395,9 @@ ACTION="${2:-}"
 if [ "$ACTION" = "initial" ] && [ -z "${ZFS_INSTALL_UNSHARED:-}" ]; then
     command -v unshare >/dev/null || die "unshare (util-linux) not found"
     export ZFS_INSTALL_UNSHARED=1
-    exec unshare --mount --propagation private -- "$0" "$@"
+    ## Re-exec through bash with the script's absolute path: "$0" alone fails
+    ## for `bash zfs-install.sh ...` (relative name, not on PATH, maybe not +x).
+    exec unshare --mount --propagation private -- bash "$SCRIPT_DIR/$(basename "$0")" "$@"
 fi
 load_config "$CONFIG_FILE"
 
