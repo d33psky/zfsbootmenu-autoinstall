@@ -351,6 +351,26 @@ install_live_packages() {
     fi
 }
 
+## Small machines: the LIVE env's ZFS ARC is uncapped (default: half of RAM) and a live
+## env has no swap. On a 3.8 GiB laptop it grew to 1.4 GiB during debootstrap + apt and
+## left 138 MB free - one dracut run away from the OOM killer (found on real HW, capped
+## by hand). Below 8 GiB RAM, cap it for the install: RAM/8, at least 256 MiB. Live
+## only (gone at reboot); the TARGET's ARC is CMDLINE_EXTRA's job (zfs.zfs_arc_max=...).
+limit_live_arc() {
+    local mem_kib cap
+    mem_kib=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+    [ "$mem_kib" -lt $((8 * 1024 * 1024)) ] || return 0
+    modprobe zfs 2>/dev/null || true
+    if [ ! -w /sys/module/zfs/parameters/zfs_arc_max ]; then
+        echo "  (zfs module not loaded - live ARC cap skipped)"
+        return 0
+    fi
+    cap=$(( mem_kib * 1024 / 8 ))
+    [ "$cap" -ge $((256 * 1024 * 1024)) ] || cap=$((256 * 1024 * 1024))
+    echo "$cap" > /sys/module/zfs/parameters/zfs_arc_max
+    log "Live env has $((mem_kib / 1024)) MiB RAM: live ZFS ARC capped to $((cap / 1048576)) MiB for the install"
+}
+
 configure_keyboard_live() {
     log "Configuring keyboard (non-interactive, US layout)"
     apt install -y debconf-utils
@@ -893,13 +913,10 @@ LABEL zfsbootmenu
     LINUX /vmlinuz.EFI
     INITRD /initramfs.img
     APPEND zbm.timeout=3 ro loglevel=4
-
-LABEL zfsbootmenu-backup
-    MENU LABEL ZFSBootMenu (Backup)
-    LINUX /vmlinuz-backup.EFI
-    INITRD /initramfs-backup.img
-    APPEND zbm.timeout=3 ro loglevel=4
 SYSCFG
+## (No "backup" LABEL: its vmlinuz-backup.EFI/initramfs-backup.img never existed on a
+## plain install, and where the encryption regen linked them they pointed to the SAME
+## image as the main entry - a menu entry that could only ever fail or duplicate.)
 
     ## Symlinks for ZBM image names
     cd /boot/syslinux
@@ -1088,11 +1105,11 @@ if grep -q 'dracut\[F\]' /tmp/generate-zbm-regen.log; then echo "FATAL: dracut f
 if [ "$BOOT_MODE" = "bios" ]; then
     cd /boot/syslinux
     for kernel in vmlinuz*-bootmenu; do
-        [ -e "\$kernel" ] && ln -sf "\$kernel" vmlinuz.EFI && ln -sf "\$kernel" vmlinuz-backup.EFI && echo "Relinked \$kernel -> vmlinuz.EFI"
+        [ -e "\$kernel" ] && ln -sf "\$kernel" vmlinuz.EFI && echo "Relinked \$kernel -> vmlinuz.EFI"
         break
     done
     for initrd in initramfs*-bootmenu.img; do
-        [ -e "\$initrd" ] && ln -sf "\$initrd" initramfs.img && ln -sf "\$initrd" initramfs-backup.img && echo "Relinked \$initrd -> initramfs.img"
+        [ -e "\$initrd" ] && ln -sf "\$initrd" initramfs.img && echo "Relinked \$initrd -> initramfs.img"
         break
     done
     [ -e vmlinuz.EFI ] && [ -e initramfs.img ] || { echo "FATAL: syslinux image links missing after regen"; exit 1; }
@@ -1321,6 +1338,7 @@ main_initial() {
 
     setup_live_apt
     install_live_packages
+    limit_live_arc
     configure_keyboard_live
 
     cleanup_target_disk
