@@ -1318,7 +1318,7 @@ apt install -yq \
     parted \
     cifs-utils \
     man-db \
-    locate
+    plocate
 EOCHROOT
 }
 
